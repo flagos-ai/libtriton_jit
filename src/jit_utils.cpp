@@ -62,15 +62,4 @@ std::filesystem::path get_home_directory() {
   }();
   return home_dir;
 }
-
-void ensure_cuda_context() {
-  CUcontext pctx;
-  checkCudaErrors(cuCtxGetCurrent(&pctx));
-  if (!pctx) {
-    CUdevice device_index;
-    checkCudaErrors(cuDeviceGet(&device_index, /*ordinal*/ 0));
-    checkCudaErrors(cuDevicePrimaryCtxRetain(&pctx, device_index));
-    checkCudaErrors(cuCtxSetCurrent(pctx));
-  }
-}
 }  // namespace triton_jit

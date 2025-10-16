@@ -4,7 +4,6 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
-#include "cuda.h"
 #include "triton_jit/jit_utils.h"
 
 namespace triton_jit {
@@ -17,12 +16,13 @@ class TritonKernel {
   std::string dir_;
   /* name of the kernel in cubin */
   std::string kernel_name_;
+  std::string mix_mode_;
   unsigned int shared_; /* amount of static shared memory per block (in bytes) required for the cubin*/
   unsigned int arch_;   /* cuda arch */
 
-  mutable CUmodule mod_;
-  mutable CUfunction fn_;
   mutable bool loaded_ = false;
+  mutable void* bin_handle_;
+  mutable void* fn_;
 
  public:
   TritonKernel(const TritonKernel&) = delete;
@@ -35,7 +35,7 @@ class TritonKernel {
               unsigned int grid_y,
               unsigned int grid_z,
               int num_warps,
-              CUstream stream,
+              aclrtStream stream,
               void** args) const;
   friend TritonJITFunction;
 

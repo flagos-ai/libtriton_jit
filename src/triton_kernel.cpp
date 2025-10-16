@@ -4,23 +4,38 @@
 #include <iostream>
 #include <string>
 
-#include "c10/util/Logging.h"  // use torch's logging
+#include "c10/util/Logging.h"
 #include "fmt/core.h"
 #include "nlohmann/json.hpp"
+#include "acl/acl.h"
+#include "experiment/runtime/runtime/rt.h"
+#include <unordered_map>
 
 using json = nlohmann::json;
 
 namespace triton_jit {
 TritonKernel::TritonKernel(std::string_view dir, std::string_view kernel_name)
-    : dir_(std::string(dir)), kernel_name_(std::string(kernel_name)) {
+    : dir_(std::string(dir)), kernel_name_(std::string(kernel_name)), 
+      mix_mode_("mix"), loaded_(false),
+      bin_handle_(nullptr), fn_(nullptr) {
   std::string metadata_path = fmt::format("{}/{}.json", this->dir_, this->kernel_name_);
   std::ifstream f(metadata_path.c_str());
+  
+  if (!f.good()) {
+    this->shared_ = 0;
+    this->arch_ = 0;
+    return;
+  }
+  
   json meta_data = json::parse(f);
-
-  // shared and arch are bound to a kernel dir
-  this->shared_ = meta_data["shared"];
-  this->arch_ = meta_data["target"]["arch"];
-  // LOG(INFO) << fmt::format("TritonKernel Metadata loaded arch: {} shared: {}", this->arch_, this->shared_);
+  
+  // Read shared memory configuration
+  this->shared_ = meta_data.contains("shared") ? meta_data["shared"].get<int>() : 0;
+  
+  // Read mix_mode (determines binary format)
+  this->mix_mode_ = meta_data.contains("mix_mode") ? meta_data["mix_mode"].get<std::string>() : "mix";
+  
+  this->arch_ = 0;
 }
 
 void TritonKernel::lazy_init_handle() const {
@@ -28,80 +43,168 @@ void TritonKernel::lazy_init_handle() const {
     return;
   }
 
-  LOG(INFO) << fmt::format("TritonKernel {} at {} loading itself!",
-                           this->kernel_name_,
-                           reinterpret_cast<const void*>(this));
-  // check cuda arch
-  CUdevice device_index;
-  checkCudaErrors(cuCtxGetDevice(&device_index));
-  int major = 0, minor = 0;
-  checkCudaErrors(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device_index));
-  checkCudaErrors(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device_index));
-  unsigned int arch = major * 10 + minor;
-  if (arch != this->arch_) {
-    throw std::runtime_error("compute architecture mismatch!");
+  // Get current device ID
+  int device_id = -1;
+  aclError err = aclrtGetDevice(&device_id);
+  if (err != ACL_SUCCESS) {
+    device_id = 0;  // fallback
   }
 
-  // load module
-  std::string cubin_path = fmt::format("{}/{}.cubin", this->dir_, this->kernel_name_);
-  LOG(INFO) << fmt::format("Loading cubin {} into device {}", cubin_path, device_index);
-  checkCudaErrors(cuModuleLoad(&this->mod_, cubin_path.c_str()));
-
-  // get function
-  checkCudaErrors(cuModuleGetFunction(&this->fn_, this->mod_, this->kernel_name_.c_str()));
-
-  // check required shared memory does not exceeds max shared memory per block
-  int shared_optin;
-  cuDeviceGetAttribute(&shared_optin, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, device_index);
-  if (this->shared_ > shared_optin) {
-    throw std::runtime_error(
-        fmt::format("Out0fResources: Requested shared memory ({}) bytes exceeds GPU's maximum ({}) bytes.",
-                    this->shared_,
-                    shared_optin));
+  // Find kernel binary file (try .npubin, .o, .ttadapter, .bin)
+  std::string rt_bin_path = fmt::format("{}/{}.npubin", this->dir_, this->kernel_name_);
+  std::ifstream bin_file(rt_bin_path, std::ios::binary | std::ios::ate);
+  
+  if (!bin_file.good()) {
+    std::vector<std::string> fallback_exts = {".o", ".ttadapter", ".bin"};
+    bool file_found = false;
+    
+    for (const auto& ext : fallback_exts) {
+      rt_bin_path = fmt::format("{}/{}{}", this->dir_, this->kernel_name_, ext);
+      bin_file.open(rt_bin_path, std::ios::binary | std::ios::ate);
+      if (bin_file.good()) {
+        file_found = true;
+        break;
+      }
+      bin_file.close();
+      bin_file.clear();
+    }
+    
+    if (!file_found) {
+      throw std::runtime_error(fmt::format("Kernel binary not found: {}", 
+                                          this->dir_ + "/" + this->kernel_name_));
+    }
   }
 
-  // increase shared memory if required
-  if (this->shared_ > 49152 && shared_optin > 49152) {
-    LOG(INFO) << fmt::format(
-        "Condition met: this->shared_ ={} && shared_optin = {}. Setting CU_FUNC_CACHE_PREFER_SHARED.",
-        this->shared_,
-        shared_optin);
-    checkCudaErrors(cuFuncSetCacheConfig(this->fn_, CU_FUNC_CACHE_PREFER_SHARED));
-    int shared_total, shared_static;
-    checkCudaErrors(cuDeviceGetAttribute(&shared_total,
-                                         CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR,
-                                         device_index));
-    checkCudaErrors(cuFuncGetAttribute(&shared_static, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, this->fn_));
-    LOG(INFO) << fmt::format("current shared memory total {}", shared_total);
-    LOG(INFO) << fmt::format("current shared memory static {}", shared_static);
-    checkCudaErrors(cuFuncSetAttribute(this->fn_,
-                                       CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                                       shared_optin - shared_static));
-    LOG(INFO) << fmt::format("shared memory to add {}", shared_optin - shared_static);
+  // Read binary file
+  std::streamsize size = bin_file.tellg();
+  if (size <= 0) {
+    throw std::runtime_error(fmt::format("Invalid binary size: {}", rt_bin_path));
   }
+  
+  bin_file.seekg(0, std::ios::beg);
+  std::vector<char> buffer(static_cast<size_t>(size));
+  
+  if (!bin_file.read(buffer.data(), size)) {
+    throw std::runtime_error(fmt::format("Failed to read binary: {}", rt_bin_path));
+  }
+  bin_file.close();
+
+  // Set device
+  rtError_t rt_err = rtSetDevice(device_id);
+  if (rt_err != RT_ERROR_NONE) {
+    throw std::runtime_error(fmt::format("rtSetDevice failed for device {}, error: {}", 
+                                        device_id, static_cast<int>(rt_err)));
+  }
+
+  // Register binary with RT API
+  rtDevBinary_t binary;
+  binary.data = buffer.data();
+  binary.length = static_cast<uint32_t>(size);
+  
+  // Set magic value based on mix_mode
+  binary.magic = (this->mix_mode_ == "aiv") ? RT_DEV_BINARY_MAGIC_ELF_AIVEC : RT_DEV_BINARY_MAGIC_ELF;
+  binary.version = 0;
+
+  void* rt_bin_handle = nullptr;
+  rt_err = rtDevBinaryRegister(&binary, &rt_bin_handle);
+  if (rt_err != RT_ERROR_NONE) {
+    throw std::runtime_error(fmt::format("rtDevBinaryRegister failed: {}", 
+                                        static_cast<int>(rt_err)));
+  }
+
+  // Create function stub
+  static std::unordered_map<std::string, size_t> registered_names;
+  static std::unordered_map<std::string, std::unique_ptr<size_t>> func_stubs;
+  
+  std::string stubName = this->kernel_name_;
+  stubName += "_" + std::to_string(registered_names[this->kernel_name_]);
+  registered_names[this->kernel_name_]++;
+  
+  auto registered = func_stubs.emplace(stubName, std::make_unique<size_t>(0));
+  void* func_stub_handle = registered.first->second.get();
+
+  // Register function
+  rt_err = rtFunctionRegister(rt_bin_handle, 
+                             func_stub_handle,
+                             stubName.c_str(),
+                             (void*)this->kernel_name_.c_str(),
+                             0);
+  if (rt_err != RT_ERROR_NONE) {
+    throw std::runtime_error(fmt::format("rtFunctionRegister failed: {}", 
+                                        static_cast<int>(rt_err)));
+  }
+  
+  // Store handles
+  this->bin_handle_ = rt_bin_handle;
+  this->fn_ = (aclrtFuncHandle)func_stub_handle;
   this->loaded_ = true;
 }
 
-// consider using a variadic template
 void TritonKernel::launch(unsigned int grid_x,
-                          unsigned int grid_y,
-                          unsigned int grid_z,
-                          int num_warps,
-                          CUstream stream,
-                          void** args) const {
+  unsigned int grid_y,
+  unsigned int grid_z,
+  int num_warps,
+  aclrtStream stream,
+  void** args) const {
   this->lazy_init_handle();
 
-  LOG(INFO) << "cuLaunchKernel";
-  checkCudaErrors(cuLaunchKernel(this->fn_,
-                                 /*grid*/ grid_x,
-                                 grid_y,
-                                 grid_z,
-                                 /*block*/ 32 * num_warps,
-                                 1,
-                                 1,
-                                 /*shared & stream*/ this->shared_,
-                                 /*stream*/ stream,
-                                 /*args*/ args,
-                                 nullptr));
+  // Calculate block count
+  uint32_t blockNum = grid_x * grid_y * grid_z;
+
+  // Get system control address
+  rtError_t ret;
+  void *ffts_addr = NULL;
+  uint32_t ffts_len;
+  ret = rtGetC2cCtrlAddr((uint64_t*)&ffts_addr, &ffts_len);
+  if (ret != RT_ERROR_NONE) {
+    throw std::runtime_error(fmt::format("rtGetC2cCtrlAddr failed: {}", 
+                                        static_cast<int>(ret)));
+  }
+
+  // Build kernel arguments structure
+  struct __attribute__((packed)) KernelArgs {
+    void* ffts_addr __attribute__((aligned(8)));
+    void* syncBlockLock __attribute__((aligned(8)));
+    void* workspace_addr __attribute__((aligned(8)));
+    void* arg0 __attribute__((aligned(8)));
+    void* arg1 __attribute__((aligned(8)));
+    void* arg2 __attribute__((aligned(8)));
+    int64_t arg3 __attribute__((aligned(8)));
+    int32_t gridX __attribute__((aligned(4)));
+    int32_t gridY __attribute__((aligned(4)));
+    int32_t gridZ __attribute__((aligned(4)));
+  };
+
+  KernelArgs kernel_args;
+  kernel_args.ffts_addr = ffts_addr;
+  kernel_args.syncBlockLock = nullptr;
+  kernel_args.workspace_addr = nullptr;
+
+  if (args != nullptr) {
+    kernel_args.arg0 = *reinterpret_cast<void**>(args[0]);
+    kernel_args.arg1 = *reinterpret_cast<void**>(args[1]);
+    kernel_args.arg2 = *reinterpret_cast<void**>(args[2]);
+    kernel_args.arg3 = args[3] ? *reinterpret_cast<int64_t*>(args[3]) : 128;
+  } else {
+    memset(&kernel_args.arg0, 0, sizeof(void*) * 3 + sizeof(int64_t));
+    kernel_args.arg3 = 128;
+  }
+
+  kernel_args.gridX = static_cast<int32_t>(grid_x);
+  kernel_args.gridY = static_cast<int32_t>(grid_y);
+  kernel_args.gridZ = static_cast<int32_t>(grid_z);
+
+  // Launch kernel
+  rtError_t rt_err = rtKernelLaunch(this->fn_,
+                                    blockNum,
+                                    static_cast<void*>(&kernel_args),
+                                    sizeof(kernel_args),
+                                    nullptr,
+                                    stream);
+
+  if (rt_err != RT_ERROR_NONE) {
+    throw std::runtime_error(fmt::format("rtKernelLaunch failed: {}", 
+                                        static_cast<int>(rt_err)));
+  }
 }
 }  // namespace triton_jit

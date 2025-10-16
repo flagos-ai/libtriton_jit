@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import List, Tuple, Union
 
 import torch
+import os
+os.environ['TORCH_DEVICE_BACKEND_AUTOLOAD'] = '0'
 import triton
 from packaging.version import Version
 
@@ -143,8 +145,8 @@ def _compile_a_kernel(
     hints = {k: v for k, v in hints.items() if v is not None}
     for h in hints.values():
         assert h in [1, 16], f"Only 1 and 16 are valid hints, got {h}"
-    divisible_by_16 = tuple(i for i, h in hints.items() if h == 16)
-    equal_to_1 = tuple(i for i, h in hints.items() if h == 1)
+    divisible_by_16 = [i for i, h in hints.items() if h == 16]
+    equal_to_1 = [i for i, h in hints.items() if h == 1]
 
     if triton_version.major == 3 and triton_version.minor == 1:
         attrs = triton.compiler.AttrsDescriptor(
@@ -222,19 +224,16 @@ def _compile_a_kernel(
     # STEP2: compile options for the backend
     opts = {"num_warps": num_warps, "num_stages": num_stages}
 
-    with torch.cuda.device(device_id):
-        # STEP3: ast source, target, compile options
-        target: triton.backends.compiler.GPUTarget = (
-            triton.runtime.driver.active.get_current_target()
-        )
-        ccinfo: triton.compiler.CompiledKernel = triton.compile(
-            src, target, options=opts
-        )
+    #with torch.npu.device(device_id):
+    # STEP3: ast source, target, compile options
+    target = triton.runtime.driver.active.get_current_target()
+    ccinfo = triton.compile(src, target, options=opts)
 
     # kernel's hash may not equals the dir in cache
     from triton.runtime.cache import get_cache_manager
 
     cache_manager = get_cache_manager(ccinfo.hash)
+    print("cache_manager.cache_dir: ", cache_manager.cache_dir)
     return cache_manager.cache_dir
 
 

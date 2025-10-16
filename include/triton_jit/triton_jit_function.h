@@ -18,7 +18,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include "cuda.h"
+#include "acl/acl.h"
 
 #include "fmt/core.h"
 #include "triton_jit/jit_utils.h"
@@ -66,18 +66,13 @@ class TritonJITFunction {
   // the cached compiled TritonKernel of this TritonJITFunction
   mutable std::unordered_map<std::string, TritonKernel> overloads_;
 
-  // a registry to hold all TritonJITFunctions
   static std::unordered_map<std::string, TritonJITFunction> functions_;
 
  public:
   static TritonJITFunction &get_instance(std::string_view path, std::string_view name);
-  TritonJITFunction(const TritonJITFunction &) = delete;
-  TritonJITFunction &operator=(const TritonJITFunction &) = delete;
-  TritonJITFunction(TritonJITFunction &&) = default;
-  TritonJITFunction &operator=(TritonJITFunction &&) = default;
 
   template <typename... Args>
-  void operator()(CUstream stream,
+  void operator()(aclrtStream stream,
                   unsigned int grid_x,
                   unsigned int grid_y,
                   unsigned int grid_z,
@@ -85,20 +80,15 @@ class TritonJITFunction {
                   unsigned int num_stages,
                   Args... args) const;
 
-  /**
-   * A Low level API to launch Triton Kernel directly with pointers to all kernel args. This is
-   * a thin wrapper around cuLaunchKernel. It is experimental and subject to change. It is
-   * designed to be used manual argument processing. An argument-buffer-like design is working in
-   * progress now to support more flexible argument processing.
-   */
-  void launch_with_raw_args(CUstream stream,
+  void launch_with_raw_args(aclrtStream stream,
                             unsigned int grid_x,
                             unsigned int grid_y,
                             unsigned int grid_z,
                             unsigned int num_warps,
                             unsigned int num_stages,
                             std::string full_signature,
-                            void **args) const;
+                            void **args,
+                            size_t num_args = 0) const;  // 默认0表示未知
 
  private:
   TritonJITFunction(std::string_view path, std::string_view name);
@@ -110,24 +100,16 @@ class TritonJITFunction {
   const TritonKernel &get_kernel(std::string_view signature,
                                  int num_warps,
                                  int num_stages,
-                                 CUdevice device_index) const;
+                                 int device_index) const;
 };
 
 struct ArgHandle {
   const StaticSignature &ssig;
-  /* data pointer of Tensors;
-  It is not that straigt extract data pointer from a tensor, since it is encapsulated
-  by Storage. We gather data pointers here for them to live out of the loop while iterating
-  over arguments.*/
   c10::SmallVector<void *> &data_pointers;
   c10::SmallVector<void *> &kernel_args;
   c10::SmallVector<std::string> &signature;
   int idx;
 
-  /***
-   * Iterate over the args and populate data_pointers, kernel_args and signature according to
-   * to rules of Triton's jit runtime.
-   */
   template <typename... Args>
   void handle_args(Args... args) {
     (handle_arg(args), ...);
@@ -242,20 +224,8 @@ struct ArgHandle {
   }
 };
 
-/***
- * The mainly used method of TritonJITFunction. It can be used with different triton functions
- * with different arguments. The main work are signature extraction; kernel arg extraction and
- * kernel launch.
- *
- * Arguments consist of 2 parts:
- * fixed part: stream, grid, compile options;
- * variadic part: arguments to the triton function.ArgHandle
- *
- * TODO:
- * customization point: compile options for different backends may be different.
- */
 template <typename... Args>
-void TritonJITFunction::operator()(CUstream stream,
+void TritonJITFunction::operator()(aclrtStream stream,
                                    unsigned int grid_x,
                                    unsigned int grid_y,
                                    unsigned int grid_z,
@@ -295,9 +265,22 @@ void TritonJITFunction::operator()(CUstream stream,
   // LOG(INFO) << "raw_args_list.size(): " << kernel_args.size() << std::endl;
 
   // TODO: use torch backend-agnostic device APIs
-  ensure_cuda_context();
-  CUdevice device_index;
-  checkCudaErrors(cuCtxGetDevice(&device_index));
+  // ensure_ascend_context();
+  aclrtContext ctx;
+  aclError ret = aclrtGetCurrentContext(&ctx);
+  if (ret != ACL_ERROR_NONE || ctx == nullptr) {
+    int deviceId = 0;
+    checkAclErrors(aclrtSetDevice(deviceId));
+    checkAclErrors(aclrtCreateContext(&ctx, deviceId));
+    checkAclErrors(aclrtSetCurrentContext(ctx));
+  }
+  int device_index;
+
+  aclError err =  aclrtGetDevice(&device_index);
+  if (err != ACL_SUCCESS) {
+    std::cerr << "aclrtGetDevice failed, error: " << static_cast<int>(err) << std::endl;
+    device_index = 0;
+  }
   const TritonKernel &kernel = this->get_kernel(full_signature, num_warps, num_stages, device_index);
   kernel.launch(grid_x, grid_y, grid_z, num_warps, stream, kernel_args.data());
   return;

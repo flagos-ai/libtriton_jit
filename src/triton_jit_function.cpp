@@ -1,16 +1,10 @@
 #include "triton_jit/triton_jit_function.h"
 
-#include <algorithm>
-#include <cassert>
 #include <string>
 #include <vector>
 
-#include <type_traits>
-#include <utility>
-#include "c10/util/Logging.h"  // use torch's logging
+#include "c10/util/Logging.h"  // 仅用于 c10::initLogging()，如果不需要也可去掉
 #include "fmt/core.h"
-#include "nlohmann/json.hpp"
-
 #include "pybind11/embed.h"
 
 namespace triton_jit {
@@ -26,7 +20,6 @@ void ensure_initialized() {
 
 TritonJITFunction::TritonJITFunction(std::string_view path, std::string_view name)
     : file_path_(std::string(path)), function_name_(std::string(name)) {
-  // embed python
   namespace py = pybind11;
   ensure_initialized();
   py::gil_scoped_acquire gil;
@@ -45,8 +38,8 @@ TritonJITFunction::TritonJITFunction(std::string_view path, std::string_view nam
   for (auto item : arg_types_raw) {
     try {
       arg_types.push_back(ArgType(item.cast<int>()));
-    } catch (const py::cast_error& e) {
-      std::cerr << "Type error: " << e.what() << std::endl;
+    } catch (const py::cast_error&) {
+      // Invalid argument type, skip
     }
   }
   this->static_sig_ = StaticSignature {num_args, arg_types};
@@ -55,12 +48,11 @@ TritonJITFunction::TritonJITFunction(std::string_view path, std::string_view nam
 const TritonKernel& TritonJITFunction::get_kernel(std::string_view _signature,
                                                   int num_warps,
                                                   int num_stages,
-                                                  CUdevice device_index) const {
+                                                  int device_index) const {
   std::string signature(_signature);
   std::string key = fmt::format("{};{}", signature, device_index);
   auto pos = this->overloads_.find(key);
   if (pos == this->overloads_.end()) {
-    // embed python
     namespace py = pybind11;
     ensure_initialized();
     py::gil_scoped_acquire gil;
@@ -73,8 +65,8 @@ const TritonKernel& TritonJITFunction::get_kernel(std::string_view _signature,
     py::object ans;
     try {
       ans = fn(this->file_path_, this->function_name_, signature, num_warps, num_stages, device_index);
-    } catch (const py::error_already_set& e) {
-      std::cerr << "Python exception: " << e.what() << std::endl;
+    } catch (const py::error_already_set&) {
+      throw;
     }
     std::string cache_dir = ans.cast<std::string>();
     TritonKernel k(cache_dir, this->function_name_);
@@ -82,7 +74,7 @@ const TritonKernel& TritonJITFunction::get_kernel(std::string_view _signature,
     if (result.second) {
       pos = result.first;
     } else {
-      throw std::runtime_error("Unable to emplace the kernel into TritonJITFunction's cache");
+      throw std::runtime_error("Failed to cache compiled kernel");
     }
   }
   return pos->second;
@@ -98,27 +90,31 @@ TritonJITFunction& TritonJITFunction::get_instance(std::string_view path, std::s
     if (result.second) {
       pos = result.first;
     } else {
-      throw std::runtime_error("Unable to emplace the TritonJITFunction into Multiton cache.");
+      throw std::runtime_error("Failed to cache JIT function");
     }
   }
   return pos->second;
 }
 
-void TritonJITFunction::launch_with_raw_args(CUstream stream,
+void TritonJITFunction::launch_with_raw_args(aclrtStream stream,
                                              unsigned int grid_x,
                                              unsigned int grid_y,
                                              unsigned int grid_z,
                                              unsigned int num_warps,
                                              unsigned int num_stages,
                                              std::string full_signature,
-                                             void** args) const {
-  CUcontext ctx;
-  checkCudaErrors(cuStreamGetCtx(stream, &ctx));
-  checkCudaErrors(cuCtxSetCurrent(ctx));
-  CUdevice d;
-  checkCudaErrors(cuCtxGetDevice(&d));
-  // LOG(INFO) << fmt::format("launching kernel");
-  const TritonKernel& kernel = this->get_kernel(full_signature, num_warps, num_stages, d);
+                                             void** args,
+                                             size_t num_args) const {
+  aclrtContext ctx = nullptr;
+  aclrtGetCurrentContext(&ctx);
+
+  int device_index = -1;
+  aclError err = aclrtGetDevice(&device_index);
+  if (err != ACL_SUCCESS) {
+    device_index = 0;
+  }
+
+  const TritonKernel& kernel = this->get_kernel(full_signature, num_warps, num_stages, device_index);
   kernel.launch(grid_x, grid_y, grid_z, num_warps, stream, args);
 }
 }  // namespace triton_jit
