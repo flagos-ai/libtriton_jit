@@ -44,12 +44,138 @@ option(TRITON_JIT_BUILD_EXAMPLES "whether to build examples" ${PROJECT_IS_TOP_LE
 option(TRITON_JIT_BUILD_TESTS "whether to build tests" ${PROJECT_IS_TOP_LEVEL})
 # a good practice for top-level project to control whether to install it as a dependency
 option(TRITON_JIT_INSTALL "whether to install the packages" ${PROJECT_IS_TOP_LEVEL})
+option(TRITON_JIT_ENABLE_NPU "Enable Ascend NPU support" OFF)
 
 
 # --------------------------- dependencies ---------------------------
 include(FetchContent)
 # dependencies: cuda toolkit
 find_package(CUDAToolkit REQUIRED COMPONENTS cuda_driver)
+
+# --------------------------- Ascend NPU Support (Optional) ---------------------------
+if(TRITON_JIT_ENABLE_NPU)
+  message(STATUS "Ascend NPU support is ENABLED")
+
+  # Set default Ascend installation path
+  set(ASCEND_INSTALL_PATH "/usr/local/Ascend" CACHE PATH "Ascend installation path")
+  if(NOT EXISTS ${ASCEND_INSTALL_PATH})
+    message(WARNING "Ascend installation not found at ${ASCEND_INSTALL_PATH}. NPU support may not work.")
+  else()
+    # Set Ascend CANN version and runtime path
+    set(ASCEND_CANN_VERSION "8.2" CACHE STRING "Ascend CANN version")
+    set(ASCEND_RUNTIME_PATH "${ASCEND_INSTALL_PATH}/ascend-toolkit/${ASCEND_CANN_VERSION}")
+
+    # Check if the specified version exists, fallback to latest if not
+    if(NOT EXISTS ${ASCEND_RUNTIME_PATH})
+      set(ASCEND_RUNTIME_PATH "${ASCEND_INSTALL_PATH}/ascend-toolkit/latest")
+      if(NOT EXISTS ${ASCEND_RUNTIME_PATH})
+        set(ASCEND_RUNTIME_PATH "${ASCEND_INSTALL_PATH}/nnae/latest")
+      endif()
+    endif()
+
+    if(EXISTS ${ASCEND_RUNTIME_PATH})
+      message(STATUS "Using Ascend runtime path: ${ASCEND_RUNTIME_PATH}")
+
+      # Detect architecture and set appropriate paths
+      set(ASCEND_ARCH_PATH "${ASCEND_RUNTIME_PATH}/aarch64-linux")
+      if(NOT EXISTS ${ASCEND_ARCH_PATH})
+        set(ASCEND_ARCH_PATH "${ASCEND_RUNTIME_PATH}/x86_64-linux")
+      endif()
+
+      if(EXISTS ${ASCEND_ARCH_PATH})
+        message(STATUS "Using Ascend architecture path: ${ASCEND_ARCH_PATH}")
+        set(ASCEND_INCLUDE_DIR "${ASCEND_ARCH_PATH}/include")
+        set(ASCEND_LIB_DIR "${ASCEND_ARCH_PATH}/lib64")
+      else()
+        set(ASCEND_INCLUDE_DIR "${ASCEND_RUNTIME_PATH}/include")
+        set(ASCEND_LIB_DIR "${ASCEND_RUNTIME_PATH}/lib64")
+      endif()
+
+      # Add Ascend include directories
+      include_directories(${ASCEND_INCLUDE_DIR})
+
+      # Add Ascend library directories
+      link_directories(${ASCEND_LIB_DIR})
+      link_directories(${ASCEND_RUNTIME_PATH}/fwkacllib/lib64)
+
+      # Find Ascend libraries
+      find_library(ASCEND_RUNTIME_LIB ascendcl PATHS ${ASCEND_LIB_DIR} ${ASCEND_RUNTIME_PATH}/fwkacllib/lib64)
+      find_library(ASCEND_RUNTIME_API_LIB runtime PATHS ${ASCEND_LIB_DIR} ${ASCEND_RUNTIME_PATH}/runtime/lib64)
+
+      if(ASCEND_RUNTIME_LIB)
+        message(STATUS "Found Ascend runtime library: ${ASCEND_RUNTIME_LIB}")
+      endif()
+      if(ASCEND_RUNTIME_API_LIB)
+        message(STATUS "Found Ascend Runtime API library: ${ASCEND_RUNTIME_API_LIB}")
+      endif()
+
+      # Try to find torch_npu
+      execute_process(
+        COMMAND ${Python_EXECUTABLE} -c "import torch_npu; import os; print(os.path.dirname(torch_npu.__file__))"
+        OUTPUT_VARIABLE TORCH_NPU_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+      )
+
+      if(TORCH_NPU_PATH)
+        message(STATUS "Found torch_npu at: ${TORCH_NPU_PATH}")
+
+        # Find the torch_npu library
+        find_library(TORCH_NPU_LIB
+          NAMES torch_npu
+          PATHS "${TORCH_NPU_PATH}/lib"
+          NO_DEFAULT_PATH
+        )
+
+        if(TORCH_NPU_LIB)
+          message(STATUS "Found torch_npu library: ${TORCH_NPU_LIB}")
+        endif()
+
+        # Add torch_npu include paths if they exist
+        set(TORCH_NPU_INCLUDE_PATHS)
+        if(EXISTS "${TORCH_NPU_PATH}/csrc")
+          list(APPEND TORCH_NPU_INCLUDE_PATHS "${TORCH_NPU_PATH}/csrc")
+        endif()
+        if(EXISTS "${TORCH_NPU_PATH}/include")
+          list(APPEND TORCH_NPU_INCLUDE_PATHS "${TORCH_NPU_PATH}/include")
+        endif()
+
+        # Add library directory to link directories
+        link_directories("${TORCH_NPU_PATH}/lib")
+      else()
+        message(WARNING "torch_npu not found. NPU support will be limited.")
+      endif()
+
+      # Add Ascend-specific compile definitions
+      add_compile_definitions(ASCEND_PLATFORM)
+      add_compile_definitions(TRITON_JIT_NPU_ENABLED)
+
+      # Add a helper function to link Ascend libraries
+      function(target_link_ascend_libraries target_name)
+        if(ASCEND_RUNTIME_LIB)
+          target_link_libraries(${target_name} PRIVATE ${ASCEND_RUNTIME_LIB})
+        endif()
+        if(ASCEND_RUNTIME_API_LIB)
+          target_link_libraries(${target_name} PRIVATE ${ASCEND_RUNTIME_API_LIB})
+        endif()
+        if(TORCH_NPU_LIB)
+          target_link_libraries(${target_name} PRIVATE ${TORCH_NPU_LIB})
+        endif()
+
+        # Set runtime path for the target
+        if(ASCEND_LIB_DIR)
+          set_target_properties(${target_name} PROPERTIES
+            INSTALL_RPATH "${ASCEND_LIB_DIR}:${ASCEND_RUNTIME_PATH}/fwkacllib/lib64"
+            BUILD_WITH_INSTALL_RPATH FALSE
+          )
+        endif()
+      endfunction()
+    endif()
+  endif()
+else()
+  message(STATUS "Ascend NPU support is DISABLED")
+endif()
+
 # dependencies: python: we will use it for embeddeing the interpreter
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
 message(STATUS "Python site-packages path: ${Python_SITELIB}")
