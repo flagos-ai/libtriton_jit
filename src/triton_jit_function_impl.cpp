@@ -122,14 +122,14 @@ const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(
     return pos->second;
 }
 
+} // namespace triton_jit
+
 // ========== Explicit Template Instantiations ==========
 
 // Instantiate for CudaBackend
 #include "triton_jit/backends/cuda_backend.h"
-template class TritonJITFunctionImpl<CudaBackend>;
+template class triton_jit::TritonJITFunctionImpl<triton_jit::CudaBackend>;
 
 // Future backends can be added here:
 // #include "triton_jit/backends/npu_backend.h"
-// template class TritonJITFunctionImpl<NpuBackend>;
-
-} // namespace triton_jit
+// template class triton_jit::TritonJITFunctionImpl<triton_jit::NpuBackend>;

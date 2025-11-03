@@ -199,7 +199,7 @@ private:
     mutable std::unordered_map<std::string, TritonKernelImpl<Backend>> overloads_;
 
     /// Global registry of all TritonJITFunction instances
-    static std::unordered_map<std::string, TritonJITFunctionImpl<Backend>> functions_;
+    static std::unordered_map<std::string, std::unique_ptr<TritonJITFunctionImpl<Backend>>> functions_;
 
 public:
     /**
@@ -216,10 +216,12 @@ public:
 
         auto it = functions_.find(key);
         if (it == functions_.end()) {
-            functions_.emplace(key, TritonJITFunctionImpl(path, name));
+            // Use new instead of make_unique since constructor is private
+            auto ptr = std::unique_ptr<TritonJITFunctionImpl>(new TritonJITFunctionImpl(path, name));
+            functions_.emplace(key, std::move(ptr));
         }
 
-        return functions_.at(key);
+        return *functions_.at(key);
     }
 
     // Delete copy constructor and assignment
@@ -354,7 +356,7 @@ private:
 
 // Initialize static member
 template<BackendPolicy Backend>
-std::unordered_map<std::string, TritonJITFunctionImpl<Backend>>
+std::unordered_map<std::string, std::unique_ptr<TritonJITFunctionImpl<Backend>>>
     TritonJITFunctionImpl<Backend>::functions_;
 
 // Verify move constructibility

@@ -99,11 +99,8 @@ public:
         unsigned int block_y = 1;
         unsigned int block_z = 1;
 
-        // Get shared memory size (if backend supports it)
-        unsigned int shared_memory = 0;
-        if constexpr (std::is_same_v<Backend, CudaBackend>) {
-            shared_memory = Backend::get_shared_memory(dir_, kernel_name_);
-        }
+        // Get shared memory size from backend
+        unsigned int shared_memory = Backend::get_shared_memory(dir_, kernel_name_);
 
         // Launch kernel using backend policy
         Backend::launch_kernel(

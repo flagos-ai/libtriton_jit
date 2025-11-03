@@ -12,7 +12,13 @@ target_include_directories(triton_jit
     $<INSTALL_INTERFACE:include>)
 target_link_libraries(triton_jit
   PUBLIC Torch::Torch CUDA::cuda_driver fmt::fmt-header-only
-  PRIVATE nlohmann_json::nlohmann_json pybind11::embed)
+  PRIVATE pybind11::embed)
+
+# Get nlohmann_json include directory for public headers (header-only library)
+get_target_property(JSON_INCLUDE_DIR nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+target_include_directories(triton_jit
+  PUBLIC
+    ${JSON_INCLUDE_DIR})
 
 # --------------------------- alias targets ---------------------------
 # This is the target used in FetchContent, since FetchContent use add_subdirectory (a sub project build)

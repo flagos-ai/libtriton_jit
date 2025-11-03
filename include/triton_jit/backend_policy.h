@@ -100,6 +100,15 @@ concept BackendPolicy = requires {
      * @return Kernel handle
      */
     { T::load_kernel(dir, name) } -> std::same_as<typename T::KernelHandle>;
+
+    /**
+     * Get shared memory size required by kernel
+     *
+     * @param dir Directory containing kernel binary
+     * @param kernel_name Name of the kernel function
+     * @return Shared memory size in bytes (0 if not applicable)
+     */
+    { T::get_shared_memory(dir, name) } -> std::same_as<unsigned int>;
 };
 
 /**
