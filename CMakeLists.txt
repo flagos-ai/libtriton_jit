@@ -3,9 +3,10 @@ project(TritonJIT LANGUAGES CUDA CXX VERSION 0.1.0)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 
 # ------------------------------- project-wide settings -------------------------------
-set(CMAKE_CXX_STANDARD 17) # for fold-expression
+set(CMAKE_CXX_STANDARD 20) # for C++20 Concepts
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) # Ensures only standard-compliant C++ is used
+set(CMAKE_CUDA_STANDARD 17) # CUDA still uses C++17
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # It is also recommended to install them in a Python virtual environment
 set(Python_FIND_VIRTUALENV FIRST)
@@ -40,6 +41,7 @@ option(TRITON_JIT_USE_EXTERNAL_JSON "whether to use external json library" OFF)
 option(TRITON_JIT_USE_EXTERNAL_FMTLIB "whether to use external fmtlib" OFF)
 option(TRITON_JIT_USE_EXTERNAL_PYBIND11 "whether to use external pybind11 library" ON)
 option(TRITON_JIT_BUILD_EXAMPLES "whether to build examples" ${PROJECT_IS_TOP_LEVEL})
+option(TRITON_JIT_BUILD_TESTS "whether to build tests" ${PROJECT_IS_TOP_LEVEL})
 # a good practice for top-level project to control whether to install it as a dependency
 option(TRITON_JIT_INSTALL "whether to install the packages" ${PROJECT_IS_TOP_LEVEL})
 
@@ -101,6 +103,12 @@ if(TRITON_JIT_BUILD_EXAMPLES)
   )
   FetchContent_MakeAvailable(googletest)
   add_subdirectory(examples)
+endif()
+
+# --------------------------- tests ---------------------------
+if(TRITON_JIT_BUILD_TESTS)
+  message(STATUS "Building tests")
+  add_subdirectory(tests)
 endif()
 
 # --------------------------- cmake package ---------------------------

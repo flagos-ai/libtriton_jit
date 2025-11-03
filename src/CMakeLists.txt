@@ -5,7 +5,7 @@
 # the cxx flags from torch, so we just merge then as one target, for simplicity
 # then it can use the same cxx flags with public dependency transitivity
 # --------------------------- triton jit function ---------------------------
-add_library(triton_jit SHARED triton_jit_function.cpp jit_utils.cpp triton_kernel.cpp)
+add_library(triton_jit SHARED triton_jit_function_impl.cpp jit_utils.cpp)
 target_include_directories(triton_jit
   PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
