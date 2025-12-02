@@ -164,10 +164,13 @@ def _compile_a_kernel(
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     elif triton_version.major == 3 and triton_version.minor == 4:
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
+    elif triton_version.major == 3 and triton_version.minor == 5:
+        attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}    
     else:
         raise RuntimeError(
-            "Triton may change APIs, we cannot ensure compatibility here now."
+            "Triton may change APIs, we cannot ensure compatibility here now. You can goto https://github.com/flagos-ai/libtriton_jit to raise an issue about supporting your triton version. Triton 3.1/3.2/3.3/3.4/3.5 are supported now."
         )
+
 
     # integer 1 in value, but the corresponding ArgType in static signature is not constexpr are added into constants
     for i in equal_to_1:
