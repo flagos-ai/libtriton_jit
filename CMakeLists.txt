@@ -23,11 +23,10 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 # ==============================================================================
 # Compile Definitions for Backend
 # ==============================================================================
-if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
+if(BACKEND STREQUAL "CUDA")
     add_compile_definitions(BACKEND_CUDA)
-    if(BACKEND STREQUAL "IX")
-        add_compile_definitions(BACKEND_IX)
-    endif()
+elseif(BACKEND STREQUAL "IX")
+    add_compile_definitions(BACKEND_IX)
 elseif(BACKEND STREQUAL "NPU")
     add_compile_definitions(BACKEND_NPU)
 elseif(BACKEND STREQUAL "MUSA")

@@ -7,6 +7,9 @@
 #include <unordered_map>
 #include <vector>
 #include <memory>
+#include <cstring>
+#include <sstream>
+#include <cctype>
 
 #include "acl/acl.h"
 #include "experiment/runtime/runtime/rt.h"
@@ -18,10 +21,225 @@
 
 namespace triton_jit {
 
+enum class NpuArgType : uint8_t {
+    POINTER = 0,
+    I32 = 1,
+    I64 = 2,
+    F32 = 3,
+    F64 = 4,
+};
+
+struct NpuArgInfo {
+    NpuArgType type;
+    size_t size;
+
+    static size_t get_size(NpuArgType t) {
+        switch (t) {
+            case NpuArgType::POINTER: return sizeof(void*);
+            case NpuArgType::I32:     return sizeof(int32_t);
+            case NpuArgType::I64:     return sizeof(int64_t);
+            case NpuArgType::F32:     return sizeof(float);
+            case NpuArgType::F64:     return sizeof(double);
+            default:                  return 8;
+        }
+    }
+
+    static size_t get_align(NpuArgType t) {
+        switch (t) {
+            case NpuArgType::POINTER: return alignof(void*);
+            case NpuArgType::I32:     return alignof(int32_t);
+            case NpuArgType::I64:     return alignof(int64_t);
+            case NpuArgType::F32:     return alignof(float);
+            case NpuArgType::F64:     return alignof(double);
+            default:                  return 8;
+        }
+    }
+};
+
 struct NpuKernelMetadata {
     unsigned int shared;
     std::string mix_mode;
+    std::vector<NpuArgInfo> arg_layout;  // Dynamic argument layout
+
+    bool has_arg_layout() const {
+        return !arg_layout.empty();
+    }
 };
+
+/**
+ * @brief Dynamic argument buffer for NPU kernel launch
+ *
+ * NPU kernel arguments must be packed into a contiguous memory block:
+ * [0-7]   ffts_addr (8B)      - System parameter
+ * [8-15]  syncBlockLock (8B)  - System parameter
+ * [16-23] workspace_addr (8B) - System parameter
+ * [24...] User arguments      - Dynamic, based on kernel signature
+ * [...]   gridX, gridY, gridZ - Grid dimensions (4B each)
+ */
+class NpuArgBuffer {
+public:
+    static constexpr size_t SYSTEM_ARGS_SIZE = 3 * sizeof(void*);  // 24 bytes
+    static constexpr size_t USER_ARGS_OFFSET = SYSTEM_ARGS_SIZE;
+
+    explicit NpuArgBuffer(size_t estimated_user_args = 64) {
+        buffer_.resize(SYSTEM_ARGS_SIZE + estimated_user_args + 16);
+        cursor_ = USER_ARGS_OFFSET;
+    }
+
+    void set_system_args(void* ffts, void* sync_lock, void* workspace) {
+        std::memcpy(buffer_.data() + 0, &ffts, sizeof(void*));
+        std::memcpy(buffer_.data() + 8, &sync_lock, sizeof(void*));
+        std::memcpy(buffer_.data() + 16, &workspace, sizeof(void*));
+    }
+
+    template<typename T>
+    void push_arg(const T& value) {
+        size_t align = alignof(T);
+        cursor_ = align_to(cursor_, align);
+
+        ensure_capacity(cursor_ + sizeof(T));
+        std::memcpy(buffer_.data() + cursor_, &value, sizeof(T));
+        cursor_ += sizeof(T);
+    }
+
+    void push_arg_by_type(void* arg_ptr, NpuArgType type) {
+        if (arg_ptr == nullptr) {
+            LOG(WARNING) << "push_arg_by_type: arg_ptr is nullptr";
+            return;
+        }
+
+        switch (type) {
+            case NpuArgType::POINTER:
+                push_arg(*reinterpret_cast<void**>(arg_ptr));
+                break;
+            case NpuArgType::I32:
+                push_arg(*reinterpret_cast<int32_t*>(arg_ptr));
+                break;
+            case NpuArgType::I64:
+                push_arg(*reinterpret_cast<int64_t*>(arg_ptr));
+                break;
+            case NpuArgType::F32:
+                push_arg(*reinterpret_cast<float*>(arg_ptr));
+                break;
+            case NpuArgType::F64:
+                push_arg(*reinterpret_cast<double*>(arg_ptr));
+                break;
+        }
+    }
+
+    void push_args_from_layout(void** args, const std::vector<NpuArgInfo>& layout) {
+        for (size_t i = 0; i < layout.size(); ++i) {
+            if (args[i] != nullptr) {
+                push_arg_by_type(args[i], layout[i].type);
+            }
+        }
+    }
+
+    void set_grid(int32_t gx, int32_t gy, int32_t gz) {
+        cursor_ = align_to(cursor_, alignof(int32_t));
+        ensure_capacity(cursor_ + 3 * sizeof(int32_t));
+
+        std::memcpy(buffer_.data() + cursor_, &gx, sizeof(int32_t));
+        cursor_ += sizeof(int32_t);
+        std::memcpy(buffer_.data() + cursor_, &gy, sizeof(int32_t));
+        cursor_ += sizeof(int32_t);
+        std::memcpy(buffer_.data() + cursor_, &gz, sizeof(int32_t));
+        cursor_ += sizeof(int32_t);
+    }
+
+    void* data() { return buffer_.data(); }
+    size_t size() const { return cursor_; }
+
+private:
+    static size_t align_to(size_t pos, size_t alignment) {
+        return (pos + alignment - 1) & ~(alignment - 1);
+    }
+
+    void ensure_capacity(size_t required) {
+        if (required > buffer_.size()) {
+            buffer_.resize(required + 32);
+        }
+    }
+
+    std::vector<std::byte> buffer_;
+    size_t cursor_;
+};
+
+/**
+ * @brief Parse signature string to extract argument types
+ *
+ * Signature format: "*fp32:16,*fp32,i64,1024,nullopt"
+ * - "*..." indicates pointer type
+ * - "i32", "i64", "u32", "u64" for integers
+ * - "fp32", "fp64" for floats
+ * - Pure numbers are constexpr (skipped)
+ * - "nullopt" is skipped
+ */
+inline std::vector<NpuArgInfo> parse_signature(const std::string& sig) {
+    std::vector<NpuArgInfo> layout;
+
+    std::stringstream ss(sig);
+    std::string token;
+
+    while (std::getline(ss, token, ',')) {
+        // Trim whitespace
+        size_t start = token.find_first_not_of(" \t");
+        size_t end = token.find_last_not_of(" \t");
+        if (start == std::string::npos) continue;
+        token = token.substr(start, end - start + 1);
+
+        // Skip empty tokens
+        if (token.empty()) continue;
+
+        // Skip "nullopt"
+        if (token == "nullopt") continue;
+
+        // Skip pure numbers (constexpr values like "1024", "128")
+        bool is_number = !token.empty() && (std::isdigit(token[0]) ||
+                         (token[0] == '-' && token.size() > 1 && std::isdigit(token[1])));
+        if (is_number) continue;
+
+        // Remove specialization suffix (:16, :1, etc.)
+        size_t colon_pos = token.find(':');
+        if (colon_pos != std::string::npos) {
+            token = token.substr(0, colon_pos);
+        }
+
+        NpuArgInfo info;
+
+        if (token[0] == '*') {
+            // Pointer type: *fp32, *fp16, *i32, etc.
+            info.type = NpuArgType::POINTER;
+            info.size = sizeof(void*);
+        } else if (token.substr(0, 3) == "i64" || token.substr(0, 3) == "u64") {
+            info.type = NpuArgType::I64;
+            info.size = sizeof(int64_t);
+        } else if (token.substr(0, 3) == "i32" || token.substr(0, 3) == "u32") {
+            info.type = NpuArgType::I32;
+            info.size = sizeof(int32_t);
+        } else if (token.substr(0, 4) == "fp64" || token.substr(0, 3) == "f64") {
+            info.type = NpuArgType::F64;
+            info.size = sizeof(double);
+        } else if (token.substr(0, 4) == "fp32" || token.substr(0, 3) == "f32") {
+            info.type = NpuArgType::F32;
+            info.size = sizeof(float);
+        } else if (token.substr(0, 4) == "fp16" || token.substr(0, 3) == "f16" ||
+                   token.substr(0, 4) == "bf16") {
+            // fp16/bf16 scalars are promoted to fp32 in most cases
+            info.type = NpuArgType::F32;
+            info.size = sizeof(float);
+        } else {
+            // Default to i64 for unknown types
+            LOG(WARNING) << "Unknown type in signature: " << token << ", defaulting to i64";
+            info.type = NpuArgType::I64;
+            info.size = sizeof(int64_t);
+        }
+
+        layout.push_back(info);
+    }
+
+    return layout;
+}
 
 struct NpuBackend {
     using StreamType = aclrtStream;
@@ -49,7 +267,9 @@ struct NpuBackend {
         unsigned grid_x, unsigned grid_y, unsigned grid_z,
         unsigned block_x, unsigned block_y, unsigned block_z,
         void** args,
-        unsigned int shared_memory = 0
+        unsigned int shared_memory = 0,
+        const std::string& signature = "",
+        const std::vector<NpuArgInfo>* arg_layout = nullptr
     ) {
         // Calculate block count
         uint32_t blockNum = grid_x * grid_y * grid_z;
@@ -64,51 +284,50 @@ struct NpuBackend {
                                                 static_cast<int>(ret)));
         }
 
-        // Build kernel arguments structure for ADD operation
-        // Layout: [system args] + [a, b, out, n] + [grid dims]
-        // Note: tile_size is constexpr, not passed at runtime
-        struct __attribute__((packed)) KernelArgs {
-            void* ffts_addr __attribute__((aligned(8)));
-            void* syncBlockLock __attribute__((aligned(8)));
-            void* workspace_addr __attribute__((aligned(8)));
-            void* arg0 __attribute__((aligned(8)));  // a (input tensor)
-            void* arg1 __attribute__((aligned(8)));  // b (input tensor)
-            void* arg2 __attribute__((aligned(8)));  // out (output tensor)
-            int64_t arg3 __attribute__((aligned(8)));  // n (number of elements)
-            int32_t gridX __attribute__((aligned(4)));
-            int32_t gridY __attribute__((aligned(4)));
-            int32_t gridZ __attribute__((aligned(4)));
-        };
-
-        KernelArgs kernel_args;
-        kernel_args.ffts_addr = ffts_addr;
-        kernel_args.syncBlockLock = nullptr;
-        kernel_args.workspace_addr = nullptr;
-
-        if (args != nullptr) {
-            // Extract arguments from void** array
-            // Add kernel signature: (a_ptr, b_ptr, out_ptr, n, BLOCK_SIZE:constexpr)
-            kernel_args.arg0 = (args[0] != nullptr) ? *reinterpret_cast<void**>(args[0]) : nullptr;
-            kernel_args.arg1 = (args[1] != nullptr) ? *reinterpret_cast<void**>(args[1]) : nullptr;
-            kernel_args.arg2 = (args[2] != nullptr) ? *reinterpret_cast<void**>(args[2]) : nullptr;
-            kernel_args.arg3 = (args[3] != nullptr) ? *reinterpret_cast<int64_t*>(args[3]) : 1024;
+        // Determine argument layout
+        std::vector<NpuArgInfo> layout;
+        if (arg_layout != nullptr && !arg_layout->empty()) {
+            // Use provided layout from metadata
+            layout = *arg_layout;
+            LOG(INFO) << fmt::format("Using metadata arg_layout with {} args", layout.size());
+        } else if (!signature.empty()) {
+            // Parse from signature string
+            layout = parse_signature(signature);
+            LOG(INFO) << fmt::format("Parsed signature '{}' -> {} runtime args",
+                                    signature, layout.size());
         } else {
-            LOG(WARNING) << "launch_kernel: args is nullptr!";
-            kernel_args.arg0 = nullptr;
-            kernel_args.arg1 = nullptr;
-            kernel_args.arg2 = nullptr;
-            kernel_args.arg3 = 1024;
+            throw std::runtime_error("launch_kernel: no signature or arg_layout provided");
         }
 
-        kernel_args.gridX = static_cast<int32_t>(grid_x);
-        kernel_args.gridY = static_cast<int32_t>(grid_y);
-        kernel_args.gridZ = static_cast<int32_t>(grid_z);
+        // Build argument buffer dynamically
+        NpuArgBuffer arg_buffer(layout.size() * 8 + 16);
+
+        // 1. Set system arguments
+        arg_buffer.set_system_args(ffts_addr, nullptr, nullptr);
+
+        // 2. Add user arguments based on layout
+        if (args != nullptr) {
+            arg_buffer.push_args_from_layout(args, layout);
+        } else {
+            LOG(WARNING) << "launch_kernel: args is nullptr!";
+        }
+
+        // 3. Add grid dimensions
+        arg_buffer.set_grid(
+            static_cast<int32_t>(grid_x),
+            static_cast<int32_t>(grid_y),
+            static_cast<int32_t>(grid_z)
+        );
+
+        LOG(INFO) << fmt::format(
+            "NPU launch_kernel: blockNum={}, arg_buffer_size={}, grid=({},{},{})",
+            blockNum, arg_buffer.size(), grid_x, grid_y, grid_z);
 
         // Launch kernel
         rtError_t rt_err = rtKernelLaunch(kernel,
                                           blockNum,
-                                          static_cast<void*>(&kernel_args),
-                                          sizeof(kernel_args),
+                                          arg_buffer.data(),
+                                          static_cast<uint32_t>(arg_buffer.size()),
                                           nullptr,
                                           stream);
 
@@ -182,6 +401,45 @@ struct NpuBackend {
             metadata.shared = meta_data.contains("shared") ? meta_data["shared"].get<int>() : 0;
             metadata.mix_mode = meta_data.contains("mix_mode") ?
                                meta_data["mix_mode"].get<std::string>() : "mix";
+
+            // Parse arg_layout if present
+            if (meta_data.contains("arg_layout") && meta_data["arg_layout"].is_array()) {
+                for (const auto& arg : meta_data["arg_layout"]) {
+                    if (!arg.contains("type")) continue;
+
+                    std::string type_str = arg["type"].get<std::string>();
+                    NpuArgInfo info;
+
+                    // Skip constexpr arguments
+                    if (type_str == "constexpr") continue;
+
+                    if (type_str == "ptr" || type_str == "pointer") {
+                        info.type = NpuArgType::POINTER;
+                        info.size = sizeof(void*);
+                    } else if (type_str == "i64" || type_str == "u64") {
+                        info.type = NpuArgType::I64;
+                        info.size = sizeof(int64_t);
+                    } else if (type_str == "i32" || type_str == "u32") {
+                        info.type = NpuArgType::I32;
+                        info.size = sizeof(int32_t);
+                    } else if (type_str == "fp64" || type_str == "f64") {
+                        info.type = NpuArgType::F64;
+                        info.size = sizeof(double);
+                    } else if (type_str == "fp32" || type_str == "f32") {
+                        info.type = NpuArgType::F32;
+                        info.size = sizeof(float);
+                    } else {
+                        // Default to i64 for unknown types
+                        LOG(WARNING) << "Unknown arg type in metadata: " << type_str;
+                        info.type = NpuArgType::I64;
+                        info.size = sizeof(int64_t);
+                    }
+
+                    metadata.arg_layout.push_back(info);
+                }
+                LOG(INFO) << fmt::format("Loaded arg_layout from JSON with {} args",
+                                        metadata.arg_layout.size());
+            }
         }
 
         LOG(INFO) << fmt::format(
@@ -305,6 +563,28 @@ struct NpuBackend {
 
         nlohmann::json meta_data = nlohmann::json::parse(f);
         return meta_data.contains("shared") ? meta_data["shared"].get<unsigned int>() : 0;
+    }
+
+    /**
+     * @brief Get kernel metadata including arg_layout
+     *
+     * @param dir Directory containing kernel files
+     * @param kernel_name Name of the kernel
+     * @return Pointer to cached metadata, or nullptr if not found
+     */
+    static const NpuKernelMetadata* get_kernel_metadata(
+        const std::string& dir,
+        const std::string& kernel_name
+    ) {
+        std::string key = fmt::format("{}::{}", dir, kernel_name);
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+
+        auto it = module_cache_.find(key);
+        if (it != module_cache_.end()) {
+            return &(it->second.metadata);
+        }
+
+        return nullptr;
     }
 };
 

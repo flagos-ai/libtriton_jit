@@ -290,9 +290,10 @@ public:
         const TritonKernelImpl<Backend>& kernel =
             this->get_kernel(full_signature, num_warps, num_stages, device_index);
 
-        // Launch kernel
+        // Launch kernel with signature (for NPU backend to parse argument types)
         c10::SmallVector<void*> ptrs = buffer.get_ptrs();
-        kernel.launch(grid_x, grid_y, grid_z, num_warps, stream, ptrs.data());
+        kernel.launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream,
+                                     ptrs.data(), full_signature);
     }
 
     void launch_with_raw_args(
@@ -311,7 +312,8 @@ public:
         const TritonKernelImpl<Backend>& kernel =
             this->get_kernel(full_signature, num_warps, num_stages, device_index);
 
-        kernel.launch(grid_x, grid_y, grid_z, num_warps, stream, args);
+        kernel.launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream,
+                                     args, full_signature);
     }
 
 private:

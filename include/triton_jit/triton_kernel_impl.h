@@ -3,6 +3,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 #include "triton_jit/backend_policy.h"
@@ -13,6 +14,21 @@ namespace triton_jit {
 // Forward declaration
 template<BackendPolicy Backend>
 class TritonJITFunctionImpl;
+
+// Forward declaration for NpuBackend detection
+struct NpuBackend;
+
+/**
+ * @brief Type trait to check if Backend is NpuBackend
+ */
+template<typename T>
+struct is_npu_backend : std::false_type {};
+
+template<>
+struct is_npu_backend<NpuBackend> : std::true_type {};
+
+template<typename T>
+inline constexpr bool is_npu_backend_v = is_npu_backend<T>::value;
 
 template<BackendPolicy Backend>
 class TritonKernelImpl {
@@ -40,6 +56,9 @@ public:
     TritonKernelImpl(TritonKernelImpl&&) = default;
     TritonKernelImpl& operator=(TritonKernelImpl&&) = default;
 
+    /**
+     * @brief Launch kernel (original interface for CUDA/IX compatibility)
+     */
     void launch(
         unsigned int grid_x,
         unsigned int grid_y,
@@ -47,6 +66,25 @@ public:
         int num_warps,
         typename Backend::StreamType stream,
         void** args
+    ) const {
+        // For NPU backend, use the signature-based launch with empty signature
+        // This will trigger signature parsing if arg_layout is available
+        launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream, args, "");
+    }
+
+    /**
+     * @brief Launch kernel with signature for NPU backend
+     *
+     * @param signature Full signature string (e.g., "*fp32:16,*fp32,i64,1024")
+     */
+    void launch_with_signature(
+        unsigned int grid_x,
+        unsigned int grid_y,
+        unsigned int grid_z,
+        int num_warps,
+        typename Backend::StreamType stream,
+        void** args,
+        const std::string& signature
     ) const {
         // Lazy initialization
         lazy_init_handle();
@@ -60,14 +98,34 @@ public:
         unsigned int shared_memory = Backend::get_shared_memory(dir_, kernel_name_);
 
         // Launch kernel using backend policy
-        Backend::launch_kernel(
-            stream,
-            kernel_handle_,
-            grid_x, grid_y, grid_z,
-            block_x, block_y, block_z,
-            args,
-            shared_memory
-        );
+        if constexpr (is_npu_backend_v<Backend>) {
+            // NPU backend: pass signature and try to get arg_layout from metadata
+            const auto* metadata = Backend::get_kernel_metadata(dir_, kernel_name_);
+            const auto* arg_layout = (metadata && metadata->has_arg_layout())
+                                   ? &(metadata->arg_layout)
+                                   : nullptr;
+
+            Backend::launch_kernel(
+                stream,
+                kernel_handle_,
+                grid_x, grid_y, grid_z,
+                block_x, block_y, block_z,
+                args,
+                shared_memory,
+                signature,
+                arg_layout
+            );
+        } else {
+            // CUDA/IX backend: use standard launch
+            Backend::launch_kernel(
+                stream,
+                kernel_handle_,
+                grid_x, grid_y, grid_z,
+                block_x, block_y, block_z,
+                args,
+                shared_memory
+            );
+        }
     }
 
     const std::string& get_dir() const {
