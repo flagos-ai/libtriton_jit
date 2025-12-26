@@ -236,19 +236,15 @@ struct ArgHandle {
     const char *dtype = triton_type<decltype(item)>::name;
     signature.push_back(dtype);
   }
-#ifdef TRITON_GE_3P5
+
   void append_scratch() {
     void *global_scratch = nullptr;
     this->buf.push_arg(global_scratch);
+#ifdef TRITON_GE_3P5
     void *profile_scratch = nullptr;
     this->buf.push_arg(profile_scratch);
-  }
-#else
-  void append_scratch() {
-    void *global_scratch = nullptr;
-    this->buf.push_arg(global_scratch);
-  }
 #endif
+  }
 };
 
 /***
