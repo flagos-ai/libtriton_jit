@@ -1,0 +1,8 @@
+{
+    "description": "Default test configuration - runs all operators",
+    "timeout": 300,
+    "categories": null,
+    "operators": null,
+    "warmup_iters": 10,
+    "bench_iters": 100
+}
