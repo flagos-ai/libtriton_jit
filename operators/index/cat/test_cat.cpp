@@ -1,0 +1,64 @@
+// ==============================================================================
+// test_cat.cpp - Multi-backend Triton JIT Cat Test
+// ==============================================================================
+
+#include "cat_op.h"
+#include "torch/torch.h"
+#include <iostream>
+
+#if defined(BACKEND_NPU)
+    #include "acl/acl.h"
+#elif defined(BACKEND_MUSA)
+    #include "musa_runtime.h"
+    #include "pybind11/embed.h"
+#else
+    #include "c10/cuda/CUDAFunctions.h"
+#endif
+
+namespace {
+
+inline void device_synchronize() {
+#if defined(BACKEND_NPU)
+    aclrtSynchronizeDevice();
+#elif defined(BACKEND_MUSA)
+    musaDeviceSynchronize();
+#else
+    c10::cuda::device_synchronize();
+#endif
+}
+
+}  // anonymous namespace
+
+int main() {
+#if defined(BACKEND_MUSA)
+    namespace py = pybind11;
+    py::scoped_interpreter guard{};
+    py::module_::import("torch_musa");
+    at::Device device(at::DeviceType::PrivateUse1, 0);
+#elif defined(BACKEND_NPU)
+    at::Device device(at::kPrivateUse1);
+#else
+    at::Device device(at::kCUDA);
+#endif
+
+    at::Tensor a = at::randn({16, 32}, at::TensorOptions().device(device));
+    at::Tensor b = at::randn({16, 64}, at::TensorOptions().device(device));
+
+    std::cout << "Testing cat operator..." << std::endl;
+    std::cout << "Input A shape: [16, 32]" << std::endl;
+    std::cout << "Input B shape: [16, 64]" << std::endl;
+
+    at::Tensor result = my_ops::cat({a, b}, 1);
+    device_synchronize();
+
+    std::cout << "Output shape: [" << result.size(0) << ", " << result.size(1) << "]" << std::endl;
+
+#if !defined(BACKEND_NPU) && !defined(BACKEND_MUSA)
+    at::Tensor expected = at::cat({a, b}, 1);
+    bool match = at::allclose(result, expected);
+    std::cout << "Results match reference: " << (match ? "YES" : "NO") << std::endl;
+#endif
+
+    std::cout << "Cat test completed!" << std::endl;
+    return 0;
+}

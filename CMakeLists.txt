@@ -187,12 +187,21 @@ endif()
 # ==============================================================================
 add_subdirectory(src)
 
-if(TRITON_JIT_BUILD_EXAMPLES)
-    set(INSTALL_GTEST OFF)
-    github_url(GTEST_URL "google/googletest/archive/refs/tags/v1.16.0.tar.gz")
-    FetchContent_Declare(googletest URL ${GTEST_URL} DOWNLOAD_EXTRACT_TIMESTAMP ON)
-    FetchContent_MakeAvailable(googletest)
-    add_subdirectory(examples)
+# Examples directory removed - using operators/ instead
+# if(TRITON_JIT_BUILD_EXAMPLES)
+#     set(INSTALL_GTEST OFF)
+#     github_url(GTEST_URL "google/googletest/archive/refs/tags/v1.16.0.tar.gz")
+#     FetchContent_Declare(googletest URL ${GTEST_URL} DOWNLOAD_EXTRACT_TIMESTAMP ON)
+#     FetchContent_MakeAvailable(googletest)
+#     add_subdirectory(examples)
+# endif()
+
+# ==============================================================================
+# Operators with Test Framework
+# ==============================================================================
+option(TRITON_JIT_BUILD_OPERATORS "Build operators with test framework" ${PROJECT_IS_TOP_LEVEL})
+if(TRITON_JIT_BUILD_OPERATORS)
+    add_subdirectory(operators)
 endif()
 
 # ==============================================================================
