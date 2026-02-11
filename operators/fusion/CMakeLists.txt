@@ -2,6 +2,7 @@
 # Fusion operators: apply_rotary_pos_emb, rwkv_ka_fusion, rwkv_mm_sparsity
 
 function(configure_fusion_target TARGET_NAME)
+    target_include_directories(${TARGET_NAME} PRIVATE ${PROJECT_SOURCE_DIR})
     if(BACKEND STREQUAL "NPU")
         target_link_ascend_libraries(${TARGET_NAME})
         if(TORCH_NPU_INCLUDE_PATHS)

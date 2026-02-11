@@ -5,6 +5,7 @@
 # Backend-specific Target Configuration
 # ==============================================================================
 function(configure_pointwise_target TARGET_NAME)
+    target_include_directories(${TARGET_NAME} PRIVATE ${PROJECT_SOURCE_DIR})
     if(BACKEND STREQUAL "NPU")
         target_link_ascend_libraries(${TARGET_NAME})
         if(TORCH_NPU_INCLUDE_PATHS)

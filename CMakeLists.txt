@@ -211,14 +211,6 @@ if(TRITON_JIT_BUILD_OPERATORS)
 endif()
 
 # ==============================================================================
-# Experiments (NPU-specific tests)
-# ==============================================================================
-option(TRITON_JIT_BUILD_EXPERIMENTS "Build experimental tests" ${PROJECT_IS_TOP_LEVEL})
-if(TRITON_JIT_BUILD_EXPERIMENTS)
-    add_subdirectory(experiments)
-endif()
-
-# ==============================================================================
 # CMake Package Installation
 # ==============================================================================
 if(TRITON_JIT_INSTALL)
