@@ -5,46 +5,8 @@
 #include "reshape_and_cache_flash_op.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
-
-#if defined(BACKEND_NPU)
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-    #endif
-#elif defined(BACKEND_MUSA)
-    #include <musa_runtime.h>
-#else
-    #include "c10/cuda/CUDAStream.h"
-#endif
-
-namespace {
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = musaStream_t;
-#else
-    using RawStream = CUstream;
-#endif
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-#elif defined(BACKEND_MUSA)
-    return nullptr;
-#else
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
-
-}  // anonymous namespace
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
 
 namespace my_ops {
 using namespace triton_jit;
@@ -80,7 +42,7 @@ void reshape_and_cache_flash(
     constexpr int num_stages = 1;
 
     c10::DeviceGuard guard(key.device());
-    RawStream stream = get_device_stream(key);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(key);
 
     f(stream, num_tokens, num_heads, 1, num_warps, num_stages,
       key_contig, value_contig, key_cache, value_cache, slot_mapping_contig,
@@ -95,14 +57,6 @@ TORCH_LIBRARY(reshape_and_cache_flash_ops, m) {
     m.def("reshape_and_cache_flash(Tensor key, Tensor value, Tensor(a!) key_cache, Tensor(b!) value_cache, Tensor slot_mapping) -> ()");
 }
 
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    TORCH_LIBRARY_IMPL(reshape_and_cache_flash_ops, PrivateUse1, m) {
-        m.impl("reshape_and_cache_flash", TORCH_FN(reshape_and_cache_flash));
-    }
-#else
-    TORCH_LIBRARY_IMPL(reshape_and_cache_flash_ops, CUDA, m) {
-        m.impl("reshape_and_cache_flash", TORCH_FN(reshape_and_cache_flash));
-    }
-#endif
+REGISTER_TRITON_OP(reshape_and_cache_flash_ops, "reshape_and_cache_flash", reshape_and_cache_flash)
 
 }  // namespace my_ops

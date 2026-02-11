@@ -242,7 +242,7 @@ private:
 public:
     
     static TritonJITFunctionImpl& get_instance(std::string_view path, std::string_view name) {
-        std::string key = std::string(path) + "::" + std::string(name);
+        std::string key = fmt::format("{}:{}", path, name);
 
         auto it = functions_.find(key);
         if (it == functions_.end()) {

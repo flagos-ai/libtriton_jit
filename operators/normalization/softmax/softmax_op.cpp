@@ -7,44 +7,11 @@
 #include "triton_jit/triton_jit_function.h"
 
 #include "ATen/WrapDimUtils.h"
-
-#if defined(BACKEND_NPU)
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-    #endif
-#elif defined(BACKEND_MUSA)
-    #include <musa_runtime.h>
-#else
-    #include "c10/cuda/CUDAStream.h"
-#endif
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
+#include "operators/common/kernel_config.h"
 
 namespace {
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = musaStream_t;
-#else
-    using RawStream = CUstream;
-#endif
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-#elif defined(BACKEND_MUSA)
-    return nullptr;
-#else
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
 
 int64_t next_power_of_2(int64_t n) {
     n--;
@@ -78,35 +45,21 @@ at::Tensor softmax(const at::Tensor& input, int64_t dim) {
     int64_t n_cols = x_permuted.size(-1);
     at::Tensor x_flat = x_permuted.view({n_rows, n_cols});
 
-#if defined(BACKEND_MUSA)
-    void* out_ptr = nullptr;
-    musaMalloc(&out_ptr, n_rows * n_cols * at::elementSize(input.scalar_type()));
-    auto opts = at::TensorOptions().dtype(input.scalar_type()).device(input.device());
-    auto deleter = [](void* ptr) { musaFree(ptr); };
-    at::Tensor output = at::from_blob(out_ptr, {n_rows, n_cols}, deleter, opts);
-#else
-    at::Tensor output = at::empty({n_rows, n_cols}, input.options());
-#endif
+    at::Tensor output = triton_jit::ops::backend_empty(
+        {n_rows, n_cols}, input.scalar_type(), input.device());
 
     // softmax_kernel_inner(output_ptr, input_ptr, M, N, input_row_stride, output_row_stride, TILE_N, ONE_TILE_PER_CTA)
     const TritonJITFunction& f = TritonJITFunction::get_instance(
         std::string("softmax.py"), "softmax_kernel_inner");
 
-#if defined(BACKEND_NPU)
-    int64_t TILE_N = std::min(next_power_of_2(n_cols), int64_t(2048));
-    constexpr int num_warps = 1;
-    constexpr int num_stages = 1;
-#else
-    int64_t TILE_N = std::min(next_power_of_2(n_cols), int64_t(4096));
-    constexpr int num_warps = 4;
-    constexpr int num_stages = 1;
-#endif
+    constexpr auto cfg = triton_jit::ops::default_softmax_config();
+    int64_t TILE_N = std::min(next_power_of_2(n_cols), cfg.max_tile_n);
     int64_t ONE_TILE_PER_CTA = (TILE_N >= n_cols) ? 1 : 0;
 
     c10::DeviceGuard guard(input.device());
-    RawStream stream = get_device_stream(x_flat);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(x_flat);
 
-    f(stream, n_rows, 1, 1, num_warps, num_stages,
+    f(stream, n_rows, 1, 1, cfg.num_warps, cfg.num_stages,
       output, x_flat,  // output first, then input
       n_rows, n_cols,
       x_flat.stride(0), output.stride(0),
@@ -128,14 +81,6 @@ TORCH_LIBRARY(softmax_ops, m) {
     m.def("softmax(Tensor self, int dim) -> Tensor");
 }
 
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    TORCH_LIBRARY_IMPL(softmax_ops, PrivateUse1, m) {
-        m.impl("softmax", TORCH_FN(softmax));
-    }
-#else
-    TORCH_LIBRARY_IMPL(softmax_ops, CUDA, m) {
-        m.impl("softmax", TORCH_FN(softmax));
-    }
-#endif
+REGISTER_TRITON_OP(softmax_ops, "softmax", softmax)
 
 }  // namespace my_ops

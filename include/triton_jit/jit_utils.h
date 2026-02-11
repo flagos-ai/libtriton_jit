@@ -116,8 +116,6 @@ struct triton_type : triton_type_helper<std::remove_cv_t<std::remove_reference_t
 
 // path of python executable
 std::filesystem::path get_script_dir();
-const char *get_gen_static_sig_script();
-const char *get_standalone_compile_script();
 
 #ifdef BACKEND_NPU
 // ACL error checking function

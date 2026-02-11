@@ -9,45 +9,8 @@
 
 #include "ATen/WrapDimUtils.h"
 
-#if defined(BACKEND_NPU)
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-    #endif
-#elif defined(BACKEND_MUSA)
-    #include <musa_runtime.h>
-#else
-    #include "c10/cuda/CUDAStream.h"
-#endif
-
-namespace {
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = musaStream_t;
-#else
-    using RawStream = CUstream;
-#endif
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-#elif defined(BACKEND_MUSA)
-    return nullptr;
-#else
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
-
-}  // anonymous namespace
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
 
 namespace my_ops {
 using namespace triton_jit;
@@ -136,14 +99,6 @@ TORCH_LIBRARY(topk_ops, m) {
     m.def("topk(Tensor self, int k, int dim=-1, bool largest=True, bool sorted=True) -> (Tensor, Tensor)");
 }
 
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    TORCH_LIBRARY_IMPL(topk_ops, PrivateUse1, m) {
-        m.impl("topk", TORCH_FN(topk));
-    }
-#else
-    TORCH_LIBRARY_IMPL(topk_ops, CUDA, m) {
-        m.impl("topk", TORCH_FN(topk));
-    }
-#endif
+REGISTER_TRITON_OP(topk_ops, "topk", topk)
 
 }  // namespace my_ops

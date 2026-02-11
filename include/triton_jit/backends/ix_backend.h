@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cuda.h>
-#include <fstream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -9,9 +8,9 @@
 
 #include "c10/util/Logging.h"
 #include "fmt/core.h"
-#include "nlohmann/json.hpp"
 #include "triton_jit/backend_policy.h"
 #include "triton_jit/jit_utils.h"
+#include "triton_jit/kernel_metadata.h"
 
 namespace triton_jit {
 
@@ -32,6 +31,7 @@ struct IxBackend {
 
     struct ModuleData {
         CUmodule module;
+        CUfunction function;
         IxKernelMetadata metadata;
     };
 
@@ -110,25 +110,19 @@ struct IxBackend {
         // Check cache first
         auto it = module_cache_.find(key);
         if (it != module_cache_.end()) {
-            // Return cached kernel
-            CUfunction kernel;
-            checkCudaErrors(cuModuleGetFunction(
-                &kernel, it->second.module, kernel_name.c_str()));
-            return kernel;
+            return it->second.function;
         }
 
         // Load metadata
-        std::string metadata_path = fmt::format("{}/{}.json", dir, kernel_name);
-        std::ifstream f(metadata_path);
-        if (!f.is_open()) {
-            throw std::runtime_error(
-                fmt::format("Failed to open metadata file: {}", metadata_path));
-        }
-
-        nlohmann::json meta_data = nlohmann::json::parse(f);
+        GpuKernelMeta gpu_meta = load_gpu_metadata(dir, kernel_name);
         IxKernelMetadata metadata;
-        metadata.shared = meta_data["shared"];
-        metadata.arch = meta_data["target"]["arch"];
+        metadata.shared = gpu_meta.shared;
+        metadata.arch = gpu_meta.arch;
+
+        if (metadata.arch == 0) {
+            throw std::runtime_error(
+                fmt::format("Failed to load metadata for kernel: {}", kernel_name));
+        }
 
         LOG(INFO) << fmt::format(
             "Loading IX kernel {} with arch={}, shared={}",
@@ -152,8 +146,8 @@ struct IxBackend {
         // Configure shared memory if needed
         configure_shared_memory(kernel, metadata.shared);
 
-        // Cache the module
-        module_cache_[key] = ModuleData{module, metadata};
+        // Cache the module and function
+        module_cache_[key] = ModuleData{module, kernel, metadata};
 
         return kernel;
     }
@@ -171,14 +165,7 @@ struct IxBackend {
         }
 
         // If not in cache, load metadata
-        std::string metadata_path = fmt::format("{}/{}.json", dir, kernel_name);
-        std::ifstream f(metadata_path);
-        if (!f.is_open()) {
-            return 0;
-        }
-
-        nlohmann::json meta_data = nlohmann::json::parse(f);
-        return meta_data["shared"];
+        return load_shared_memory(dir, kernel_name);
     }
 
 private:

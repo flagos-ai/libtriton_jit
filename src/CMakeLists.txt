@@ -5,7 +5,7 @@
 # the cxx flags from torch, so we just merge then as one target, for simplicity
 # then it can use the same cxx flags with public dependency transitivity
 # --------------------------- triton jit function ---------------------------
-add_library(triton_jit SHARED triton_jit_function_impl.cpp jit_utils.cpp)
+add_library(triton_jit SHARED triton_jit_function_impl.cpp jit_utils.cpp kernel_metadata.cpp)
 target_include_directories(triton_jit
   PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
@@ -29,11 +29,8 @@ endif()
 # Set backend compile definition based on BACKEND variable
 target_compile_definitions(triton_jit PUBLIC BACKEND_${BACKEND})
 
-# Get nlohmann_json include directory for public headers (header-only library)
-get_target_property(JSON_INCLUDE_DIR nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
-target_include_directories(triton_jit
-  PUBLIC
-    ${JSON_INCLUDE_DIR})
+# nlohmann_json is only used in kernel_metadata.cpp, keep it PRIVATE
+target_link_libraries(triton_jit PRIVATE nlohmann_json::nlohmann_json)
 
 # --------------------------- alias targets ---------------------------
 # This is the target used in FetchContent, since FetchContent use add_subdirectory (a sub project build)

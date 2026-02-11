@@ -7,12 +7,13 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "c10/util/Logging.h"
 #include "fmt/core.h"
-#include "nlohmann/json.hpp"
 #include "triton_jit/backend_policy.h"
 #include "triton_jit/jit_utils.h"
+#include "triton_jit/kernel_metadata.h"
 
 namespace triton_jit {
 
@@ -35,6 +36,7 @@ struct MusaBackend {
 
     struct ModuleData {
         MUmodule module;
+        MUfunction function;
         MusaKernelMetadata metadata;
     };
 
@@ -64,16 +66,6 @@ struct MusaBackend {
             muGetErrorString(result, &error_string);
             throw std::runtime_error(
                 fmt::format("MUSA kernel launch failed: {}", error_string)
-            );
-        }
-
-        // Synchronize and check for async errors
-        MUresult syncResult = muStreamSynchronize(stream);
-        if (syncResult != MUSA_SUCCESS) {
-            const char* error_string;
-            muGetErrorString(syncResult, &error_string);
-            throw std::runtime_error(
-                fmt::format("MUSA stream synchronize failed: {}", error_string)
             );
         }
     }
@@ -114,23 +106,13 @@ struct MusaBackend {
 
         auto it = module_cache_.find(key);
         if (it != module_cache_.end()) {
-            MUfunction kernel;
-            checkMusaErrors(muModuleGetFunction(
-                &kernel, it->second.module, kernel_name.c_str()));
-            return kernel;
+            return it->second.function;
         }
 
         // Load metadata from .json file
-        std::string metadata_path = fmt::format("{}/{}.json", dir, kernel_name);
-        std::ifstream f(metadata_path);
-        if (!f.is_open()) {
-            throw std::runtime_error(
-                fmt::format("Failed to open metadata file: {}", metadata_path));
-        }
-
-        nlohmann::json meta_data = nlohmann::json::parse(f);
+        GpuKernelMeta gpu_meta = load_gpu_metadata(dir, kernel_name);
         MusaKernelMetadata metadata;
-        metadata.shared = meta_data["shared"];
+        metadata.shared = gpu_meta.shared;
 
         // Try to load pre-compiled binaries in priority order: .mubin, .o (ELF), .so, .llir
         MUmodule module = nullptr;
@@ -192,7 +174,7 @@ struct MusaBackend {
         checkMusaErrors(muModuleGetFunction(&kernel, module, kernel_name.c_str()));
 
         // Cache the loaded module and metadata
-        module_cache_[key] = ModuleData{module, metadata};
+        module_cache_[key] = ModuleData{module, kernel, metadata};
 
         return kernel;
     }
@@ -210,14 +192,7 @@ struct MusaBackend {
         }
 
         // If not in cache, load from metadata file directly
-        std::string metadata_path = fmt::format("{}/{}.json", dir, kernel_name);
-        std::ifstream f(metadata_path);
-        if (!f.is_open()) {
-            LOG(WARNING) << "Could not open metadata file to get shared memory: " << metadata_path;
-            return 0;
-        }
-        nlohmann::json meta_data = nlohmann::json::parse(f);
-        return meta_data["shared"];
+        return load_shared_memory(dir, kernel_name);
     }
 };
 

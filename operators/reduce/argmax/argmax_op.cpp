@@ -8,45 +8,8 @@
 
 #include "ATen/WrapDimUtils.h"
 
-#if defined(BACKEND_NPU)
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-    #endif
-#elif defined(BACKEND_MUSA)
-    #include <musa_runtime.h>
-#else
-    #include "c10/cuda/CUDAStream.h"
-#endif
-
-namespace {
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = musaStream_t;
-#else
-    using RawStream = CUstream;
-#endif
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-#elif defined(BACKEND_MUSA)
-    return nullptr;
-#else
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
-
-}  // anonymous namespace
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
 
 namespace my_ops {
 using namespace triton_jit;
@@ -69,15 +32,7 @@ at::Tensor argmax(const at::Tensor& self, int64_t dim, bool keepdim) {
         if (i != dim) out_shape.push_back(self.size(i));
     }
 
-#if defined(BACKEND_MUSA)
-    void* ptr = nullptr;
-    musaMalloc(&ptr, M * sizeof(int64_t));
-    auto opts = at::TensorOptions().dtype(at::kLong).device(self.device());
-    auto deleter = [](void* p) { musaFree(p); };
-    at::Tensor out = at::from_blob(ptr, {M}, deleter, opts);
-#else
-    at::Tensor out = at::empty({M}, at::TensorOptions().dtype(at::kLong).device(self.device()));
-#endif
+    at::Tensor out = triton_jit::ops::backend_empty({M}, at::kLong, self.device());
 
     const TritonJITFunction& f = TritonJITFunction::get_instance(
         std::string("argmax.py"), "argmax_dim_kernel");
@@ -90,7 +45,7 @@ at::Tensor argmax(const at::Tensor& self, int64_t dim, bool keepdim) {
     const unsigned int num_blocks = (M + BLOCK_M - 1) / BLOCK_M;
 
     c10::DeviceGuard guard(self.device());
-    RawStream stream = get_device_stream(permuted);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(permuted);
 
     f(stream, num_blocks, 1, 1, num_warps, num_stages,
       permuted.view({M, N}), out, M, N, K, BLOCK_M, BLOCK_N);
@@ -111,14 +66,6 @@ TORCH_LIBRARY(argmax_ops, m) {
     m.def("argmax(Tensor self, int dim, bool keepdim=False) -> Tensor");
 }
 
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    TORCH_LIBRARY_IMPL(argmax_ops, PrivateUse1, m) {
-        m.impl("argmax", TORCH_FN(argmax));
-    }
-#else
-    TORCH_LIBRARY_IMPL(argmax_ops, CUDA, m) {
-        m.impl("argmax", TORCH_FN(argmax));
-    }
-#endif
+REGISTER_TRITON_OP(argmax_ops, "argmax", argmax)
 
 }  // namespace my_ops

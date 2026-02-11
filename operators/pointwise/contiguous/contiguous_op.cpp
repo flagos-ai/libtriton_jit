@@ -5,46 +5,8 @@
 #include "contiguous_op.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
-
-#if defined(BACKEND_NPU)
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-    #endif
-#elif defined(BACKEND_MUSA)
-    #include <musa_runtime.h>
-#else
-    #include "c10/cuda/CUDAStream.h"
-#endif
-
-namespace {
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = musaStream_t;
-#else
-    using RawStream = CUstream;
-#endif
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-#elif defined(BACKEND_MUSA)
-    return nullptr;
-#else
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
-
-}  // anonymous namespace
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
 
 namespace my_ops {
 using namespace triton_jit;
@@ -56,25 +18,10 @@ at::Tensor contiguous(const at::Tensor& input) {
     }
 
     // Allocate contiguous output
-#if defined(BACKEND_MUSA)
-    void* d_ptr = nullptr;
-    size_t num_bytes = input.numel() * at::elementSize(input.scalar_type());
-    musaError_t err = musaMalloc(&d_ptr, num_bytes);
-    if (err != musaSuccess) {
-        throw std::runtime_error("musaMalloc failed: " + std::string(musaGetErrorString(err)));
-    }
-
-    auto options = at::TensorOptions().dtype(input.scalar_type()).device(input.device());
-    auto deleter = [](void* ptr) { musaFree(ptr); };
-    at::Tensor out = at::from_blob(d_ptr, input.sizes().vec(), deleter, options);
-#else
-    at::Tensor out = at::empty(input.sizes(),
-        at::TensorOptions().dtype(input.scalar_type()).device(input.device())
-        .memory_format(c10::MemoryFormat::Contiguous));
-#endif
+    at::Tensor out = triton_jit::ops::backend_empty(input.sizes(), input.scalar_type(), input.device());
 
     c10::DeviceGuard guard(input.device());
-    RawStream stream = get_device_stream(input);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
     if (input.dim() == 1 || input.numel() == 0) {
         // 1D case: use simple copy kernel
@@ -124,14 +71,6 @@ TORCH_LIBRARY(contiguous_ops, m) {
     m.def("contiguous(Tensor self) -> Tensor");
 }
 
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    TORCH_LIBRARY_IMPL(contiguous_ops, PrivateUse1, m) {
-        m.impl("contiguous", TORCH_FN(contiguous));
-    }
-#else
-    TORCH_LIBRARY_IMPL(contiguous_ops, CUDA, m) {
-        m.impl("contiguous", TORCH_FN(contiguous));
-    }
-#endif
+REGISTER_TRITON_OP(contiguous_ops, "contiguous", contiguous)
 
 }  // namespace my_ops

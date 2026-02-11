@@ -12,77 +12,9 @@
 #include "ATen/native/ReduceOpsUtils.h"
 #include "c10/util/DimVector.h"
 
-// ==============================================================================
-//                         BACKEND DETECTION & HEADERS
-// ==============================================================================
-
-#if defined(BACKEND_NPU)
-    // ----------------------------- NPU Backend -----------------------------
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-        #warning "torch_npu headers not found, NPU stream support disabled"
-    #endif
-
-#elif defined(BACKEND_MUSA)
-    // ----------------------------- MUSA Backend ----------------------------
-    #include <musa.h>
-    #if __has_include("torch_musa/csrc/core/musa/MUSAStream.h")
-        #include "torch_musa/csrc/core/musa/MUSAStream.h"
-        #define HAS_TORCH_MUSA 1
-    #else
-        #define HAS_TORCH_MUSA 0
-        #warning "torch_musa headers not found, MUSA stream support disabled"
-    #endif
-
-#else
-    // ----------------------- CUDA / IX Backend (Default) -------------------
-    #include "c10/cuda/CUDAStream.h"
-
-#endif
-
-// ==============================================================================
-//                         BACKEND-SPECIFIC TYPES & UTILITIES
-// ==============================================================================
-
-namespace {
-
-// ------------------------------ Stream Types ---------------------------------
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = MUstream;
-#else
-    using RawStream = CUstream;
-#endif
-
-// ----------------------------- Stream Getter ---------------------------------
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-
-#elif defined(BACKEND_MUSA)
-    #if HAS_TORCH_MUSA
-        return c10::musa::getCurrentMUSAStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-
-#else  // CUDA / IX
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
-
-}  // anonymous namespace
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
+#include "operators/common/kernel_config.h"
 
 // ==============================================================================
 //                         HELPER FUNCTIONS
@@ -145,38 +77,26 @@ at::Tensor sum_dim(const at::Tensor &self,
     // sum_dim_kernel(inp, out, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr)
     const TritonJITFunction &f = TritonJITFunction::get_instance("./sum.py", "sum_dim_kernel");
 
-#if defined(BACKEND_NPU)
-    // NPU: smaller block sizes to avoid UB overflow
-    constexpr int64_t BLOCK_M = 4;
-    constexpr int64_t BLOCK_N = 256;
-    constexpr int num_warps = 1;
-    constexpr int num_stages = 1;
-#else
-    // CUDA/MUSA/IX: larger block sizes for better performance
-    constexpr int64_t BLOCK_M = 4;
-    constexpr int64_t BLOCK_N = 512;
-    constexpr int num_warps = 8;
-    constexpr int num_stages = 2;
-#endif
+    constexpr auto cfg = triton_jit::ops::default_reduce_sum_config();
 
-    const unsigned int num_blocks = (non_reduction_size + BLOCK_M - 1) / BLOCK_M;
+    const unsigned int num_blocks = (non_reduction_size + cfg.BLOCK_M - 1) / cfg.BLOCK_M;
 
     // ------------------------- Kernel Launch ---------------------------------
     c10::DeviceGuard guard(out.device());
-    RawStream stream = get_device_stream(permuted_self);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(permuted_self);
 
     f(stream,
       num_blocks,
       1,
       1,
-      num_warps,
-      num_stages,
+      cfg.num_warps,
+      cfg.num_stages,
       permuted_self,
       out,
       non_reduction_size,
       reduction_size,
-      BLOCK_M,
-      BLOCK_N);
+      cfg.BLOCK_M,
+      cfg.BLOCK_N);
     return out;
 }
 
@@ -188,17 +108,6 @@ TORCH_LIBRARY(my_ops, m) {
     m.def("sum.dim_IntList(Tensor self, int[1]? dim, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor");
 }
 
-// Backend-specific dispatch key registration
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    // NPU and MUSA use PrivateUse1 dispatch key
-    TORCH_LIBRARY_IMPL(my_ops, PrivateUse1, m) {
-        m.impl("sum.dim_IntList", TORCH_FN(sum_dim));
-    }
-#else
-    // CUDA and IX use CUDA dispatch key
-    TORCH_LIBRARY_IMPL(my_ops, CUDA, m) {
-        m.impl("sum.dim_IntList", TORCH_FN(sum_dim));
-    }
-#endif
+REGISTER_TRITON_OP(my_ops, "sum.dim_IntList", sum_dim)
 
 }  // namespace my_ops

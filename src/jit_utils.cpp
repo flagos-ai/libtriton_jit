@@ -41,16 +41,6 @@ std::filesystem::path get_script_dir() {
   return script_dir;
 }
 
-const char* get_gen_static_sig_script() {
-  std::filesystem::path script_dir = get_script_dir();
-  return (script_dir / "gen_ssig.py").c_str();
-}
-
-const char* get_standalone_compile_script() {
-  std::filesystem::path script_dir = get_script_dir();
-  return (script_dir / "standalone_compile.py").c_str();
-}
-
 std::filesystem::path get_home_directory() {
   const static std::filesystem::path home_dir = []() {
 #ifdef _WIN32

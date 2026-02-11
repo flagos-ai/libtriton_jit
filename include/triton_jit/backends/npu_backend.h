@@ -5,242 +5,20 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
-#include <vector>
 #include <memory>
-#include <cstring>
-#include <sstream>
-#include <cctype>
+#include <vector>
 
 #include "acl/acl.h"
 #include "runtime/runtime/rt.h"
 #include "c10/util/Logging.h"
 #include "fmt/core.h"
-#include "nlohmann/json.hpp"
 #include "triton_jit/backend_policy.h"
-#include "triton_jit/jit_utils.h"  // for checkAclErrors
+#include "triton_jit/jit_utils.h"
+#include "triton_jit/kernel_metadata.h"
+#include "triton_jit/backends/npu_types.h"
+#include "triton_jit/backends/npu_arg_buffer.h"
 
 namespace triton_jit {
-
-enum class NpuArgType : uint8_t {
-    POINTER = 0,
-    I32 = 1,
-    I64 = 2,
-    F32 = 3,
-    F64 = 4,
-};
-
-struct NpuArgInfo {
-    NpuArgType type;
-    size_t size;
-
-    static size_t get_size(NpuArgType t) {
-        switch (t) {
-            case NpuArgType::POINTER: return sizeof(void*);
-            case NpuArgType::I32:     return sizeof(int32_t);
-            case NpuArgType::I64:     return sizeof(int64_t);
-            case NpuArgType::F32:     return sizeof(float);
-            case NpuArgType::F64:     return sizeof(double);
-            default:                  return 8;
-        }
-    }
-
-    static size_t get_align(NpuArgType t) {
-        switch (t) {
-            case NpuArgType::POINTER: return alignof(void*);
-            case NpuArgType::I32:     return alignof(int32_t);
-            case NpuArgType::I64:     return alignof(int64_t);
-            case NpuArgType::F32:     return alignof(float);
-            case NpuArgType::F64:     return alignof(double);
-            default:                  return 8;
-        }
-    }
-};
-
-struct NpuKernelMetadata {
-    unsigned int shared;
-    std::string mix_mode;
-    std::vector<NpuArgInfo> arg_layout;  // Dynamic argument layout
-    size_t workspace_size = 0;           // Per-block workspace size in bytes
-
-    bool has_arg_layout() const {
-        return !arg_layout.empty();
-    }
-};
-
-/**
- * @brief Dynamic argument buffer for NPU kernel launch
- *
- * NPU kernel arguments must be packed into a contiguous memory block:
- * [0-7]   ffts_addr (8B)      - System parameter
- * [8-15]  syncBlockLock (8B)  - System parameter
- * [16-23] workspace_addr (8B) - System parameter
- * [24...] User arguments      - Dynamic, based on kernel signature
- * [...]   gridX, gridY, gridZ - Grid dimensions (4B each)
- */
-class NpuArgBuffer {
-public:
-    static constexpr size_t SYSTEM_ARGS_SIZE = 3 * sizeof(void*);  // 24 bytes
-    static constexpr size_t USER_ARGS_OFFSET = SYSTEM_ARGS_SIZE;
-
-    explicit NpuArgBuffer(size_t estimated_user_args = 64) {
-        buffer_.resize(SYSTEM_ARGS_SIZE + estimated_user_args + 16);
-        cursor_ = USER_ARGS_OFFSET;
-    }
-
-    void set_system_args(void* ffts, void* sync_lock, void* workspace) {
-        std::memcpy(buffer_.data() + 0, &ffts, sizeof(void*));
-        std::memcpy(buffer_.data() + 8, &sync_lock, sizeof(void*));
-        std::memcpy(buffer_.data() + 16, &workspace, sizeof(void*));
-    }
-
-    template<typename T>
-    void push_arg(const T& value) {
-        size_t align = alignof(T);
-        cursor_ = align_to(cursor_, align);
-
-        ensure_capacity(cursor_ + sizeof(T));
-        std::memcpy(buffer_.data() + cursor_, &value, sizeof(T));
-        cursor_ += sizeof(T);
-    }
-
-    void push_arg_by_type(void* arg_ptr, NpuArgType type) {
-        if (arg_ptr == nullptr) {
-            LOG(WARNING) << "push_arg_by_type: arg_ptr is nullptr";
-            return;
-        }
-
-        switch (type) {
-            case NpuArgType::POINTER:
-                push_arg(*reinterpret_cast<void**>(arg_ptr));
-                break;
-            case NpuArgType::I32:
-                push_arg(*reinterpret_cast<int32_t*>(arg_ptr));
-                break;
-            case NpuArgType::I64:
-                push_arg(*reinterpret_cast<int64_t*>(arg_ptr));
-                break;
-            case NpuArgType::F32:
-                push_arg(*reinterpret_cast<float*>(arg_ptr));
-                break;
-            case NpuArgType::F64:
-                push_arg(*reinterpret_cast<double*>(arg_ptr));
-                break;
-        }
-    }
-
-    void push_args_from_layout(void** args, const std::vector<NpuArgInfo>& layout) {
-        for (size_t i = 0; i < layout.size(); ++i) {
-            if (args[i] != nullptr) {
-                push_arg_by_type(args[i], layout[i].type);
-            }
-        }
-    }
-
-    void set_grid(int32_t gx, int32_t gy, int32_t gz) {
-        cursor_ = align_to(cursor_, alignof(int32_t));
-        ensure_capacity(cursor_ + 3 * sizeof(int32_t));
-
-        std::memcpy(buffer_.data() + cursor_, &gx, sizeof(int32_t));
-        cursor_ += sizeof(int32_t);
-        std::memcpy(buffer_.data() + cursor_, &gy, sizeof(int32_t));
-        cursor_ += sizeof(int32_t);
-        std::memcpy(buffer_.data() + cursor_, &gz, sizeof(int32_t));
-        cursor_ += sizeof(int32_t);
-    }
-
-    void* data() { return buffer_.data(); }
-    size_t size() const { return cursor_; }
-
-private:
-    static size_t align_to(size_t pos, size_t alignment) {
-        return (pos + alignment - 1) & ~(alignment - 1);
-    }
-
-    void ensure_capacity(size_t required) {
-        if (required > buffer_.size()) {
-            buffer_.resize(required + 32);
-        }
-    }
-
-    std::vector<std::byte> buffer_;
-    size_t cursor_;
-};
-
-/**
- * @brief Parse signature string to extract argument types
- *
- * Signature format: "*fp32:16,*fp32,i64,1024,nullopt"
- * - "*..." indicates pointer type
- * - "i32", "i64", "u32", "u64" for integers
- * - "fp32", "fp64" for floats
- * - Pure numbers are constexpr (skipped)
- * - "nullopt" is skipped
- */
-inline std::vector<NpuArgInfo> parse_signature(const std::string& sig) {
-    std::vector<NpuArgInfo> layout;
-
-    std::stringstream ss(sig);
-    std::string token;
-
-    while (std::getline(ss, token, ',')) {
-        // Trim whitespace
-        size_t start = token.find_first_not_of(" \t");
-        size_t end = token.find_last_not_of(" \t");
-        if (start == std::string::npos) continue;
-        token = token.substr(start, end - start + 1);
-
-        // Skip empty tokens
-        if (token.empty()) continue;
-
-        // Skip "nullopt"
-        if (token == "nullopt") continue;
-
-        // Skip pure numbers (constexpr values like "1024", "128")
-        bool is_number = !token.empty() && (std::isdigit(token[0]) ||
-                         (token[0] == '-' && token.size() > 1 && std::isdigit(token[1])));
-        if (is_number) continue;
-
-        // Remove specialization suffix (:16, :1, etc.)
-        size_t colon_pos = token.find(':');
-        if (colon_pos != std::string::npos) {
-            token = token.substr(0, colon_pos);
-        }
-
-        NpuArgInfo info;
-
-        if (token[0] == '*') {
-            // Pointer type: *fp32, *fp16, *i32, etc.
-            info.type = NpuArgType::POINTER;
-            info.size = sizeof(void*);
-        } else if (token.substr(0, 3) == "i64" || token.substr(0, 3) == "u64") {
-            info.type = NpuArgType::I64;
-            info.size = sizeof(int64_t);
-        } else if (token.substr(0, 3) == "i32" || token.substr(0, 3) == "u32") {
-            info.type = NpuArgType::I32;
-            info.size = sizeof(int32_t);
-        } else if (token.substr(0, 4) == "fp64" || token.substr(0, 3) == "f64") {
-            info.type = NpuArgType::F64;
-            info.size = sizeof(double);
-        } else if (token.substr(0, 4) == "fp32" || token.substr(0, 3) == "f32") {
-            info.type = NpuArgType::F32;
-            info.size = sizeof(float);
-        } else if (token.substr(0, 4) == "fp16" || token.substr(0, 3) == "f16" ||
-                   token.substr(0, 4) == "bf16") {
-            // fp16/bf16 scalars are promoted to fp32 in most cases
-            info.type = NpuArgType::F32;
-            info.size = sizeof(float);
-        } else {
-            // Default to i64 for unknown types
-            LOG(WARNING) << "Unknown type in signature: " << token << ", defaulting to i64";
-            info.type = NpuArgType::I64;
-            info.size = sizeof(int64_t);
-        }
-
-        layout.push_back(info);
-    }
-
-    return layout;
-}
 
 struct NpuBackend {
     using StreamType = aclrtStream;
@@ -274,7 +52,6 @@ struct NpuBackend {
         size_t num_args = 0,
         size_t workspace_size = 0
     ) {
-        // Calculate block count
         uint32_t blockNum = grid_x * grid_y * grid_z;
 
         // Get system control address
@@ -288,23 +65,18 @@ struct NpuBackend {
         }
 
         // Determine argument layout
-        // Prefer signature-derived layout to stay consistent with Triton argument packing.
         std::vector<NpuArgInfo> layout;
         if (!signature.empty()) {
-            // Parse from signature string
             layout = parse_signature(signature);
             LOG(INFO) << fmt::format("Parsed signature '{}' -> {} runtime args",
                                     signature, layout.size());
         } else if (arg_layout != nullptr && !arg_layout->empty()) {
-            // Fallback to provided layout from metadata
             layout = *arg_layout;
             LOG(INFO) << fmt::format("Using metadata arg_layout with {} args", layout.size());
         } else {
             throw std::runtime_error("launch_kernel: no signature or arg_layout provided");
         }
 
-        // NPU does not use global scratch pointer (workspace is handled separately)
-        // Just verify arg count matches
         if (num_args != 0 && num_args != layout.size()) {
             throw std::runtime_error(fmt::format(
                 "launch_kernel: arg count mismatch (layout={}, args={})",
@@ -334,7 +106,6 @@ struct NpuBackend {
 
         // 3. Add user arguments based on layout
         if (args != nullptr) {
-            // Debug: print first few argument values
             LOG(INFO) << fmt::format("NPU args debug: num_args={}", layout.size());
             for (size_t i = 0; i < std::min(layout.size(), size_t(6)); ++i) {
                 if (args[i] != nullptr) {
@@ -372,17 +143,27 @@ struct NpuBackend {
                                           nullptr,
                                           stream);
 
-        // Free workspace after kernel execution scheduled (will be freed after sync)
-        // Note: we can't free immediately as kernel execution is async
-        // For now, leak the workspace - proper solution needs workspace pool management
-        // TODO: implement workspace pool to avoid memory leak
-
         if (rt_err != RT_ERROR_NONE) {
             if (workspace_addr) {
                 rtFree(workspace_addr);
             }
             throw std::runtime_error(fmt::format("rtKernelLaunch failed: {}",
                                                 static_cast<int>(rt_err)));
+        }
+
+        // Free workspace after kernel completes via stream callback
+        if (workspace_addr) {
+            aclError cb_err = aclrtLaunchCallback(
+                [](void* userData) { rtFree(userData); },
+                workspace_addr,
+                ACL_CALLBACK_BLOCK,
+                stream
+            );
+            if (cb_err != ACL_ERROR_NONE) {
+                LOG(WARNING) << fmt::format(
+                    "Failed to register workspace cleanup callback (err={}), "
+                    "workspace may leak", static_cast<int>(cb_err));
+            }
         }
     }
 
@@ -437,65 +218,8 @@ struct NpuBackend {
             return it->second.fn_handle;
         }
 
-        // Load metadata
-        std::string metadata_path = fmt::format("{}/{}.json", dir, kernel_name);
-        std::ifstream f(metadata_path);
-
-        NpuKernelMetadata metadata;
-        metadata.shared = 0;
-        metadata.mix_mode = "mix";
-
-        if (f.is_open()) {
-            nlohmann::json meta_data = nlohmann::json::parse(f);
-            metadata.shared = meta_data.contains("shared") ? meta_data["shared"].get<int>() : 0;
-            metadata.mix_mode = meta_data.contains("mix_mode") ?
-                               meta_data["mix_mode"].get<std::string>() : "mix";
-
-            // Parse workspace_size if present
-            if (meta_data.contains("workspace_size")) {
-                metadata.workspace_size = meta_data["workspace_size"].get<size_t>();
-                LOG(INFO) << fmt::format("Loaded workspace_size={} from metadata", metadata.workspace_size);
-            }
-
-            // Parse arg_layout if present
-            if (meta_data.contains("arg_layout") && meta_data["arg_layout"].is_array()) {
-                for (const auto& arg : meta_data["arg_layout"]) {
-                    if (!arg.contains("type")) continue;
-
-                    std::string type_str = arg["type"].get<std::string>();
-                    NpuArgInfo info;
-
-                    // Skip constexpr arguments
-                    if (type_str == "constexpr") continue;
-
-                    if (type_str == "ptr" || type_str == "pointer") {
-                        info.type = NpuArgType::POINTER;
-                        info.size = sizeof(void*);
-                    } else if (type_str == "i64" || type_str == "u64") {
-                        info.type = NpuArgType::I64;
-                        info.size = sizeof(int64_t);
-                    } else if (type_str == "i32" || type_str == "u32") {
-                        info.type = NpuArgType::I32;
-                        info.size = sizeof(int32_t);
-                    } else if (type_str == "fp64" || type_str == "f64") {
-                        info.type = NpuArgType::F64;
-                        info.size = sizeof(double);
-                    } else if (type_str == "fp32" || type_str == "f32") {
-                        info.type = NpuArgType::F32;
-                        info.size = sizeof(float);
-                    } else {
-                        // Default to i64 for unknown types
-                        LOG(WARNING) << "Unknown arg type in metadata: " << type_str;
-                        info.type = NpuArgType::I64;
-                        info.size = sizeof(int64_t);
-                    }
-
-                    metadata.arg_layout.push_back(info);
-                }
-                LOG(INFO) << fmt::format("Loaded arg_layout from JSON with {} args",
-                                        metadata.arg_layout.size());
-            }
-        }
+        // Load metadata via centralized loader (no JSON dependency in header)
+        NpuKernelMetadata metadata = load_npu_metadata(dir, kernel_name);
 
         LOG(INFO) << fmt::format(
             "Loading NPU kernel {} with mix_mode={}, shared={}",
@@ -561,7 +285,6 @@ struct NpuBackend {
         binary.data = buffer.data();
         binary.length = static_cast<uint32_t>(size);
 
-        // Set magic value based on mix_mode
         binary.magic = (metadata.mix_mode == "aiv") ? RT_DEV_BINARY_MAGIC_ELF_AIVEC : RT_DEV_BINARY_MAGIC_ELF;
         binary.version = 0;
 
@@ -609,23 +332,11 @@ struct NpuBackend {
             return it->second.metadata.shared;
         }
 
-        // If not in cache, load metadata
-        std::string metadata_path = fmt::format("{}/{}.json", dir, kernel_name);
-        std::ifstream f(metadata_path);
-        if (!f.is_open()) {
-            return 0;
-        }
-
-        nlohmann::json meta_data = nlohmann::json::parse(f);
-        return meta_data.contains("shared") ? meta_data["shared"].get<unsigned int>() : 0;
+        return load_shared_memory(dir, kernel_name);
     }
 
     /**
      * @brief Get kernel metadata including arg_layout
-     *
-     * @param dir Directory containing kernel files
-     * @param kernel_name Name of the kernel
-     * @return Pointer to cached metadata, or nullptr if not found
      */
     static const NpuKernelMetadata* get_kernel_metadata(
         const std::string& dir,

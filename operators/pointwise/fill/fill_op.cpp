@@ -6,59 +6,8 @@
 #include "fill_op.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
-
-// ==============================================================================
-//                         BACKEND DETECTION & HEADERS
-// ==============================================================================
-
-#if defined(BACKEND_NPU)
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-    #endif
-
-#elif defined(BACKEND_MUSA)
-    #include <musa_runtime.h>
-
-#else
-    #include "c10/cuda/CUDAStream.h"
-
-#endif
-
-// ==============================================================================
-//                         BACKEND-SPECIFIC TYPES & UTILITIES
-// ==============================================================================
-
-namespace {
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = musaStream_t;
-#else
-    using RawStream = CUstream;
-#endif
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-
-#elif defined(BACKEND_MUSA)
-    return nullptr;
-
-#else
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
-
-}  // anonymous namespace
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
 
 // ==============================================================================
 //                         KERNEL IMPLEMENTATION
@@ -69,24 +18,7 @@ using namespace triton_jit;
 
 at::Tensor fill_tensor(const at::Tensor& input, double value) {
     // Output allocation
-#if defined(BACKEND_MUSA)
-    void* d_ptr = nullptr;
-    size_t num_bytes = input.numel() * at::elementSize(input.scalar_type());
-    musaError_t err = musaMalloc(&d_ptr, num_bytes);
-    if (err != musaSuccess) {
-        throw std::runtime_error("musaMalloc failed: " + std::string(musaGetErrorString(err)));
-    }
-
-    auto options = at::TensorOptions()
-        .dtype(input.scalar_type())
-        .device(input.device());
-
-    auto deleter = [](void* ptr) { musaFree(ptr); };
-    at::Tensor out = at::from_blob(d_ptr, input.sizes(), deleter, options);
-#else
-    at::Tensor out = at::empty(input.sizes(),
-        at::TensorOptions().dtype(input.scalar_type()).device(input.device()));
-#endif
+    at::Tensor out = triton_jit::ops::backend_empty(input.sizes(), input.scalar_type(), input.device());
 
     // Kernel setup
     const TritonJITFunction& f = TritonJITFunction::get_instance(
@@ -100,7 +32,7 @@ at::Tensor fill_tensor(const at::Tensor& input, double value) {
 
     // Kernel launch
     c10::DeviceGuard guard(out.device());
-    RawStream stream = get_device_stream(input);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
     // Convert value to appropriate type
     float float_value = static_cast<float>(value);
@@ -122,7 +54,7 @@ at::Tensor& fill_tensor_(at::Tensor& input, double value) {
 
     // Kernel launch
     c10::DeviceGuard guard(input.device());
-    RawStream stream = get_device_stream(input);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
     float float_value = static_cast<float>(value);
     f(stream, num_blocks, 1, 1, num_warps, num_stages, input, float_value, n, tile_size);
@@ -139,16 +71,7 @@ TORCH_LIBRARY(fill_ops, m) {
     m.def("fill_tensor_(Tensor(a!) self, float value) -> Tensor(a!)");
 }
 
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    TORCH_LIBRARY_IMPL(fill_ops, PrivateUse1, m) {
-        m.impl("fill_tensor", TORCH_FN(fill_tensor));
-        m.impl("fill_tensor_", TORCH_FN(fill_tensor_));
-    }
-#else
-    TORCH_LIBRARY_IMPL(fill_ops, CUDA, m) {
-        m.impl("fill_tensor", TORCH_FN(fill_tensor));
-        m.impl("fill_tensor_", TORCH_FN(fill_tensor_));
-    }
-#endif
+REGISTER_TRITON_OP(fill_ops, "fill_tensor", fill_tensor)
+REGISTER_TRITON_OP(fill_ops, "fill_tensor_", fill_tensor_)
 
 }  // namespace my_ops

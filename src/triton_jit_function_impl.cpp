@@ -9,7 +9,6 @@
 
 #include "c10/util/Logging.h"
 #include "fmt/core.h"
-#include "nlohmann/json.hpp"
 #include "pybind11/embed.h"
 
 namespace triton_jit {

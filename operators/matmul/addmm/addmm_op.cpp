@@ -6,46 +6,9 @@
 #include "addmm_op.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
-
-#if defined(BACKEND_NPU)
-    #if __has_include("torch_npu/csrc/core/npu/NPUStream.h")
-        #include "torch_npu/csrc/core/npu/NPUStream.h"
-        #define HAS_TORCH_NPU 1
-    #else
-        #define HAS_TORCH_NPU 0
-    #endif
-#elif defined(BACKEND_MUSA)
-    #include <musa_runtime.h>
-#else
-    #include "c10/cuda/CUDAStream.h"
-#endif
-
-namespace {
-
-#if defined(BACKEND_NPU)
-    using RawStream = aclrtStream;
-#elif defined(BACKEND_MUSA)
-    using RawStream = musaStream_t;
-#else
-    using RawStream = CUstream;
-#endif
-
-inline RawStream get_device_stream([[maybe_unused]] const at::Tensor& tensor) {
-#if defined(BACKEND_NPU)
-    #if HAS_TORCH_NPU
-        return c10_npu::getCurrentNPUStream(tensor.device().index()).stream();
-    #else
-        return nullptr;
-    #endif
-#elif defined(BACKEND_MUSA)
-    return nullptr;
-#else
-    auto cuda_stream = c10::cuda::getCurrentCUDAStream(tensor.device().index());
-    return static_cast<CUstream>(cuda_stream.stream());
-#endif
-}
-
-}  // anonymous namespace
+#include "operators/common/backend_ops.h"
+#include "operators/common/op_registration.h"
+#include "operators/common/kernel_config.h"
 
 namespace my_ops {
 using namespace triton_jit;
@@ -67,44 +30,21 @@ at::Tensor addmm(const at::Tensor& input, const at::Tensor& a, const at::Tensor&
     float beta_val = beta.toFloat();
     float alpha_val = alpha.toFloat();
 
-#if defined(BACKEND_MUSA)
-    void* c_ptr = nullptr;
-    size_t c_bytes = M * N * at::elementSize(a.scalar_type());
-    musaMalloc(&c_ptr, c_bytes);
-    auto opts = at::TensorOptions().dtype(a.scalar_type()).device(a.device());
-    auto deleter = [](void* ptr) { musaFree(ptr); };
-    at::Tensor c = at::from_blob(c_ptr, {M, N}, deleter, opts);
-#else
-    at::Tensor c = at::empty({M, N}, a.options());
-#endif
+    at::Tensor c = triton_jit::ops::backend_empty({M, N}, a.scalar_type(), a.device());
 
     const TritonJITFunction& f = TritonJITFunction::get_instance(
         std::string("addmm.py"), "addmm_kernel");
 
-#if defined(BACKEND_NPU)
-    // NPU: Smaller blocks to fit in Unified Buffer (~192KB available)
-    constexpr int64_t BLOCK_M = 32;
-    constexpr int64_t BLOCK_N = 32;
-    constexpr int64_t BLOCK_K = 32;
-    constexpr int num_warps = 1;
-    constexpr int num_stages = 1;
-#else
-    // CUDA/MUSA: Larger blocks for better performance
-    constexpr int64_t BLOCK_M = 64;
-    constexpr int64_t BLOCK_N = 64;
-    constexpr int64_t BLOCK_K = 32;
-    constexpr int num_warps = 4;
-    constexpr int num_stages = 2;
-#endif
+    constexpr auto cfg = triton_jit::ops::default_matmul_config();
 
-    int64_t num_m_tiles = (M + BLOCK_M - 1) / BLOCK_M;
-    int64_t num_n_tiles = (N + BLOCK_N - 1) / BLOCK_N;
+    int64_t num_m_tiles = (M + cfg.BLOCK_M - 1) / cfg.BLOCK_M;
+    int64_t num_n_tiles = (N + cfg.BLOCK_N - 1) / cfg.BLOCK_N;
     unsigned int num_blocks = num_m_tiles * num_n_tiles;
 
     c10::DeviceGuard guard(a.device());
-    RawStream stream = get_device_stream(a);
+    triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(a);
 
-    f(stream, num_blocks, 1, 1, num_warps, num_stages,
+    f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages,
       input_expanded, a_contig, b_contig, c,
       M, N, K,
       alpha_val, beta_val,
@@ -112,7 +52,7 @@ at::Tensor addmm(const at::Tensor& input, const at::Tensor& a, const at::Tensor&
       a_contig.stride(0), a_contig.stride(1),
       b_contig.stride(0), b_contig.stride(1),
       c.stride(0), c.stride(1),
-      BLOCK_M, BLOCK_N, BLOCK_K);
+      cfg.BLOCK_M, cfg.BLOCK_N, cfg.BLOCK_K);
 
     return c;
 }
@@ -121,14 +61,6 @@ TORCH_LIBRARY(addmm_ops, m) {
     m.def("addmm(Tensor input, Tensor mat1, Tensor mat2, Scalar beta, Scalar alpha) -> Tensor");
 }
 
-#if defined(BACKEND_NPU) || defined(BACKEND_MUSA)
-    TORCH_LIBRARY_IMPL(addmm_ops, PrivateUse1, m) {
-        m.impl("addmm", TORCH_FN(addmm));
-    }
-#else
-    TORCH_LIBRARY_IMPL(addmm_ops, CUDA, m) {
-        m.impl("addmm", TORCH_FN(addmm));
-    }
-#endif
+REGISTER_TRITON_OP(addmm_ops, "addmm", addmm)
 
 }  // namespace my_ops

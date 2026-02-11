@@ -6,8 +6,7 @@
  * for CUDA, MUSA, NPU, and IX backends.
  */
 
-#ifndef TRITON_JIT_TEST_FRAMEWORK_H
-#define TRITON_JIT_TEST_FRAMEWORK_H
+#pragma once
 
 #include <torch/torch.h>
 #include <ATen/ATen.h>
@@ -410,5 +409,3 @@ BenchmarkResult TestRunner::run_benchmark(const TestConfig& config,
 
 } // namespace test
 } // namespace triton_jit
-
-#endif // TRITON_JIT_TEST_FRAMEWORK_H
