@@ -99,7 +99,7 @@ endif()
 option(TRITON_JIT_USE_EXTERNAL_JSON "Use external json library" OFF)
 option(TRITON_JIT_USE_EXTERNAL_FMTLIB "Use external fmtlib" OFF)
 option(TRITON_JIT_USE_EXTERNAL_PYBIND11 "Use external pybind11 library" ON)
-option(TRITON_JIT_BUILD_EXAMPLES "Build examples" ${PROJECT_IS_TOP_LEVEL})
+
 option(TRITON_JIT_INSTALL "Install the packages" ${PROJECT_IS_TOP_LEVEL})
 
 # ==============================================================================
@@ -186,13 +186,6 @@ endif()
 # Subdirectories
 # ==============================================================================
 add_subdirectory(src)
-
-# ==============================================================================
-# Examples
-# ==============================================================================
-if(TRITON_JIT_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif()
 
 # ==============================================================================
 # Operators with Test Framework
