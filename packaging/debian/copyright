@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: libtriton_jit
 Upstream-Contact: FlagTree <contact@flagos.io>
-Source: https://github.com/shiptux/libtriton_jit
+Source: https://github.com/flagos-ai/libtriton_jit
 
 Files: *
 Copyright: 2024-2025 Clement Chan

@@ -5,7 +5,7 @@ Summary:        Triton JIT runtime library
 
 License:        MIT
 # Note: bundled fmt (MIT with optional exception) is included in the devel subpackage
-URL:            https://github.com/shiptux/libtriton_jit
+URL:            https://github.com/flagos-ai/libtriton_jit
 Source0:        %{name}-%{version}.tar.gz
 
 # Minimal BuildRequires - CUDA, PyTorch, Triton are container-provided

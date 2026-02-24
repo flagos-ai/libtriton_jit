@@ -9,9 +9,9 @@ Build-Depends: debhelper-compat (= 13),
                python3-dev,
                nlohmann-json3-dev (>= 3.11.3)
 Standards-Version: 4.6.2
-Homepage: https://github.com/shiptux/libtriton_jit
-Vcs-Browser: https://github.com/shiptux/libtriton_jit
-Vcs-Git: https://github.com/shiptux/libtriton_jit.git
+Homepage: https://github.com/flagos-ai/libtriton_jit
+Vcs-Browser: https://github.com/flagos-ai/libtriton_jit
+Vcs-Git: https://github.com/flagos-ai/libtriton_jit.git
 Rules-Requires-Root: no
 X-Build-Environment: This package is designed to be built in a CUDA container
  environment that provides the necessary SDK and Python packages:
