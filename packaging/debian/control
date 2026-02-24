@@ -1,0 +1,46 @@
+Source: libtriton-jit
+Section: libs
+Priority: optional
+Maintainer: FlagTree Project <contact@flagos.io>
+Build-Depends: debhelper-compat (= 13),
+               cmake,
+               ninja-build,
+               patchelf,
+               python3-dev,
+               nlohmann-json3-dev (>= 3.11.3)
+Standards-Version: 4.6.2
+Homepage: https://github.com/shiptux/libtriton_jit
+Vcs-Browser: https://github.com/shiptux/libtriton_jit
+Vcs-Git: https://github.com/shiptux/libtriton_jit.git
+Rules-Requires-Root: no
+X-Build-Environment: This package is designed to be built in a CUDA container
+ environment that provides the necessary SDK and Python packages:
+ .
+ - CUDA toolkit (>= 12.0) from nvidia/cuda base image
+ - PyTorch (>= 2.5.0) and Triton (>= 3.1.0) via pip
+ - pybind11 via pip, nlohmann-json via system package
+ - fmt 10.2.1 is downloaded via CMake FetchContent at build time
+ .
+ The Build-Depends listed above are for the Debian packaging tools only.
+ CUDA and Python dependencies are provided by the container environment.
+
+Package: libtriton-jit
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Triton JIT runtime library
+ libtriton_jit is a C++ library providing Triton JIT runtime functionality.
+ It enables just-in-time compilation of Triton kernels for GPU acceleration.
+ .
+ This package contains the shared library.
+
+Package: libtriton-jit-dev
+Section: libdevel
+Architecture: amd64 arm64
+Depends: ${misc:Depends},
+         libtriton-jit (= ${binary:Version})
+Conflicts: libfmt-dev
+Description: Triton JIT runtime library - development files
+ libtriton_jit is a C++ library providing Triton JIT runtime functionality.
+ It enables just-in-time compilation of Triton kernels for GPU acceleration.
+ .
+ This package contains the development files (headers and CMake configs).

@@ -1,0 +1,74 @@
+name: Build Packages
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb:
+    name: Build Debian Package (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - base_image: "nvidia/cuda:12.6.0-devel-ubuntu24.04"
+            label: "ubuntu2404-cuda1260"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Debian package
+        run: |
+          cd packaging/debian/build-helpers
+          ./build-libtriton-jit.sh \
+            --base-image "${{ matrix.base_image }}" \
+            --output-dir "${{ github.workspace }}/output"
+
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-packages-${{ matrix.label }}
+          path: output/*.deb
+          retention-days: 30
+
+  build-rpm:
+    name: Build RPM Package (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - base_image: "nvidia/cuda:12.6.0-devel-rockylinux9"
+            label: "rocky9-cuda1260"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build RPM package
+        run: |
+          cd packaging/rpm
+          ./build-rpm.sh \
+            --base-image "${{ matrix.base_image }}" \
+            --output-dir "${{ github.workspace }}/output"
+
+      - name: Upload RPM packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-packages-${{ matrix.label }}
+          path: |
+            output/rpms/**/*.rpm
+            output/srpms/**/*.rpm
+          retention-days: 30
