@@ -1,0 +1,46 @@
+name: Build Debian Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'packaging/debian/**'
+      - '.github/workflows/build-deb.yml'
+  workflow_dispatch:
+
+jobs:
+  build-deb-packages:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - base_image: "nvidia/cuda:12.6.0-devel-ubuntu24.04"
+            label: "ubuntu2404-cuda1260"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Debian packages
+        run: |
+          cd packaging/debian/build-helpers
+          ./build-libtriton-jit.sh \
+            --base-image "${{ matrix.base_image }}" \
+            --output-dir "${{ github.workspace }}/output"
+
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-packages-${{ matrix.label }}
+          path: output/*.deb
+          retention-days: 7

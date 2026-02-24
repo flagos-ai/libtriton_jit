@@ -1,0 +1,53 @@
+# Multi-stage Dockerfile to build Debian packages for libtriton-jit
+
+ARG BASE_IMAGE=nvidia/cuda:12.6.0-devel-ubuntu24.04
+FROM ${BASE_IMAGE} AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Debian packaging tools and build dependencies
+# Ubuntu 24.04 provides cmake 3.28+, nlohmann-json 3.11.3, libfmt 10.2.1
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    debhelper \
+    devscripts \
+    dpkg-dev \
+    fakeroot \
+    libfmt-dev \
+    ninja-build \
+    nlohmann-json3-dev \
+    patchelf \
+    python3-dev \
+    python3-pip \
+    python3-setuptools \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch, Triton, and pybind11 via pip
+RUN pip3 install --no-cache-dir --break-system-packages \
+    "torch>=2.5.0" "triton>=3.1.0" "pybind11"
+
+# Copy source code
+COPY . /workspace/libtriton-jit
+WORKDIR /workspace/libtriton-jit
+
+# Place debian/ at the source root where dpkg-buildpackage expects it
+RUN if [ -d "packaging/debian" ]; then \
+        cp -r packaging/debian debian; \
+    fi
+
+# Build the Debian package (-d to skip dep checks, deps are container-provided)
+RUN dpkg-buildpackage -us -uc -b -d || \
+    { echo "Build failed, checking logs..."; \
+      find /workspace -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true; \
+      exit 1; }
+
+# Collect built .deb files
+RUN mkdir -p /output && \
+    find /workspace -maxdepth 1 -name "*.deb" -exec cp {} /output/ \; && \
+    ls -lh /output/
+
+# Output stage: minimal image with only the .deb files
+FROM alpine:latest AS output
+COPY --from=builder /output/*.deb /output/

@@ -57,7 +57,7 @@ find_package(Torch MODULE REQUIRED) # Note: it sets ABI
 
 # dependencies: json
 if (TRITON_JIT_USE_EXTERNAL_JSON)
-  find_package(nlohmann_json VERSION 3.11.3 REQUIRED)
+  find_package(nlohmann_json 3.11.3 REQUIRED)
 else()
   FetchContent_Declare(json
     URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
@@ -68,7 +68,7 @@ endif()
 
 # dependencies: fmtlib
 if(TRITON_JIT_USE_EXTERNAL_FMTLIB)
-  find_package(fmt VERSION 10.2.1 REQUIRED)
+  find_package(fmt 10.2.1 REQUIRED)
 else()
   FetchContent_Declare(fmt
     GIT_REPOSITORY https://github.com/fmtlib/fmt
@@ -91,6 +91,9 @@ else()
   FetchContent_MakeAvailable(pybind11)
 endif()
 # --------------------------- subdirectories ---------------------------
+if(TRITON_JIT_INSTALL)
+  include(GNUInstallDirs)
+endif()
 add_subdirectory(src)
 if(TRITON_JIT_BUILD_EXAMPLES)
   set(INSTALL_GTEST OFF) # we do not install tests
@@ -105,7 +108,6 @@ endif()
 
 # --------------------------- cmake package ---------------------------
 if(TRITON_JIT_INSTALL)
-  include(GNUInstallDirs)
   include(CMakePackageConfigHelpers)
   # generate the config file that includes the exports: TritonJITConfig.cmake
   configure_package_config_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Config.cmake.in
