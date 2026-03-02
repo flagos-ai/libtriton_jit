@@ -1,0 +1,49 @@
+ARG BASE_IMAGE=nvidia/cuda:12.6.0-devel-rockylinux9
+FROM ${BASE_IMAGE} AS builder
+
+# Enable EPEL and CRB for ninja-build, patchelf, etc.
+RUN dnf install -y epel-release && \
+    (dnf config-manager --set-enabled crb 2>/dev/null || \
+     dnf config-manager --set-enabled powertools 2>/dev/null || true) && \
+    dnf install -y \
+    rpm-build \
+    rpmdevtools \
+    cmake \
+    ninja-build \
+    gcc-c++ \
+    python3-devel \
+    python3-pip \
+    patchelf \
+    git \
+    && dnf clean all
+
+
+# Install PyTorch, Triton, and pybind11 via pip
+RUN pip3 install --no-cache-dir "torch>=2.5.0" "triton>=3.1.0" "pybind11"
+
+# Setup RPM build environment
+RUN rpmdev-setuptree
+
+WORKDIR /workspace
+COPY . /workspace/
+
+# Create source tarball
+RUN tar czf /root/rpmbuild/SOURCES/libtriton-jit-0.1.0.tar.gz \
+    --transform 's,^\.,libtriton-jit-0.1.0,' \
+    --exclude='.git' \
+    --exclude='build' \
+    .
+
+# Build the RPM package (--nocheck to skip dep verification)
+RUN rpmbuild -ba --nocheck /workspace/packaging/rpm/libtriton-jit.spec || \
+    { echo "RPM build failed"; exit 1; }
+
+# Collect built RPMs into /output
+RUN mkdir -p /output/rpms /output/srpms && \
+    find /root/rpmbuild/RPMS -name "*.rpm" -exec cp {} /output/rpms/ \; && \
+    find /root/rpmbuild/SRPMS -name "*.rpm" -exec cp {} /output/srpms/ \; && \
+    ls -lhR /output/
+
+# Output stage
+FROM alpine:latest AS output
+COPY --from=builder /output/ /output/

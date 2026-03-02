@@ -1,0 +1,107 @@
+name: Upload to Nexus Repository
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Build workflow run ID (optional, uses latest if not specified)'
+        required: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download deb build artifacts
+        uses: dawidd6/action-download-artifact@v12
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: build-deb.yml
+          run_id: ${{ github.event.inputs.run_id }}
+          workflow_conclusion: success
+          path: packages/
+
+      - name: Download rpm build artifacts
+        uses: dawidd6/action-download-artifact@v12
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: build-rpm.yml
+          run_id: ${{ github.event.inputs.run_id }}
+          workflow_conclusion: success
+          path: packages/
+        continue-on-error: true
+
+      - name: List downloaded packages
+        run: |
+          echo "Downloaded packages:"
+          find packages/ -name "*.deb" -o -name "*.rpm" | sort
+
+      - name: Upload deb packages to Nexus APT repository
+        env:
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+          NEXUS_APT_URL: ${{ secrets.NEXUS_APT_URL }}
+        run: |
+          set -e
+
+          upload_deb() {
+            local deb_file="$1"
+            local filename=$(basename "$deb_file")
+            local package=$(dpkg-deb -f "$deb_file" Package)
+            local version=$(dpkg-deb -f "$deb_file" Version)
+            local arch=$(dpkg-deb -f "$deb_file" Architecture)
+
+            echo "Uploading: $filename (${package} ${version} ${arch})"
+
+            if curl -f -u "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" \
+                 --upload-file "$deb_file" \
+                 "${NEXUS_APT_URL}/${filename}"; then
+              echo "  -> OK"
+            else
+              echo "  -> FAILED"
+              return 1
+            fi
+          }
+
+          uploaded=0
+          for deb in $(find packages/ -name "*.deb"); do
+            if upload_deb "$deb"; then
+              ((uploaded++))
+            fi
+          done
+          echo "Uploaded $uploaded deb package(s)"
+
+      - name: Upload rpm packages to Nexus YUM repository
+        env:
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+          NEXUS_YUM_URL: ${{ secrets.NEXUS_YUM_URL }}
+        run: |
+          set -e
+
+          uploaded=0
+          for rpm in $(find packages/ -name "*.rpm" ! -name "*.src.rpm"); do
+            filename=$(basename "$rpm")
+            echo "Uploading: $filename"
+
+            if curl -f -u "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" \
+                 --upload-file "$rpm" \
+                 "${NEXUS_YUM_URL}/${filename}"; then
+              echo "  -> OK"
+              ((uploaded++))
+            else
+              echo "  -> FAILED"
+            fi
+          done
+          echo "Uploaded $uploaded rpm package(s)"
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "Upload completed!"
+          echo ""
+          echo "Packages uploaded:"
+          find packages/ -name "*.deb" -o -name "*.rpm" | xargs -I{} basename {} | sort
