@@ -65,6 +65,8 @@ struct NormConfig {
 inline constexpr NormConfig default_norm_config() {
 #if defined(BACKEND_NPU)
   return {1024, 1, 1};
+#elif defined(BACKEND_MLU)
+  return {2048, 1, 1};
 #else
   return {0, 4, 1};
 #endif
@@ -81,8 +83,39 @@ struct RotaryConfig {
 inline constexpr RotaryConfig default_rotary_config() {
 #if defined(BACKEND_NPU)
   return {4, 4, 1, 1};
+#elif defined(BACKEND_MLU)
+  return {32, 4, 1, 1};
 #else
   return {8, 4, 4, 1};
+#endif
+}
+
+// ---- Pointwise config ----
+struct PointwiseConfig {
+  int64_t tile_size;
+  int num_warps;
+  int num_stages;
+};
+
+inline constexpr PointwiseConfig default_pointwise_config() {
+#if defined(BACKEND_MLU)
+  return {4096, 4, 1};
+#else
+  return {1024, 8, 1};
+#endif
+}
+
+// ---- Basic config ----
+struct BasicConfig {
+  int num_warps;
+  int num_stages;
+};
+
+inline constexpr BasicConfig default_basic_config() {
+#if defined(BACKEND_MLU)
+  return {1, 1};
+#else
+  return {4, 1};
 #endif
 }
 

@@ -79,6 +79,23 @@ NpuKernelMetadata load_npu_metadata(const std::string& dir, const std::string& k
   return meta;
 }
 
+MluKernelMetadata load_mlu_metadata(const std::string& dir, const std::string& kernel_name) {
+  std::string path = fmt::format("{}/{}.json", dir, kernel_name);
+  std::ifstream f(path);
+  MluKernelMetadata meta;
+  if (!f.is_open()) {
+    return meta;
+  }
+  nlohmann::json j = nlohmann::json::parse(f);
+  meta.shared = j.value("shared", 0u);
+  meta.num_warps = j.value("num_warps", 1);
+  meta.promote_shared = j.value("promote_shared", false);
+  if (j.contains("target") && j["target"].contains("arch")) {
+    meta.arch = j["target"]["arch"].get<unsigned int>();
+  }
+  return meta;
+}
+
 unsigned int load_shared_memory(const std::string& dir, const std::string& kernel_name) {
   std::string path = fmt::format("{}/{}.json", dir, kernel_name);
   std::ifstream f(path);

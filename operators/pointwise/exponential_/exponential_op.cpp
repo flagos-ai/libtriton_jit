@@ -4,6 +4,7 @@
 
 #include "exponential_op.h"
 #include "operators/common/backend_ops.h"
+#include "operators/common/kernel_config.h"
 #include "operators/common/op_registration.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
@@ -31,17 +32,16 @@ at::Tensor& exponential_(at::Tensor& input, double lambd) {
   const TritonJITFunction& f =
       TritonJITFunction::get_instance(std::string("exponential_.py"), "exponential_kernel");
 
-  constexpr int64_t tile_size = 1024;
-  constexpr int num_warps = 8;
-  constexpr int num_stages = 1;
+  constexpr auto cfg = triton_jit::ops::default_pointwise_config();
+
   const int64_t n = input.numel();
-  const unsigned int num_blocks = (n + tile_size - 1) / tile_size;
+  const unsigned int num_blocks = (n + cfg.tile_size - 1) / cfg.tile_size;
 
   c10::DeviceGuard guard(input.device());
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(input);
 
   float float_lambd = static_cast<float>(lambd);
-  f(stream, num_blocks, 1, 1, num_warps, num_stages, input, input, float_lambd, n, tile_size);
+  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, input, input, float_lambd, n, cfg.tile_size);
 
   return input;
 }

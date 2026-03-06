@@ -29,6 +29,11 @@
 #include <pybind11/embed.h>
 namespace py = pybind11;
 #define DEVICE_TYPE at::DeviceType::PrivateUse1
+#elif defined(BACKEND_MLU)
+#include <cnrt.h>
+#include <pybind11/embed.h>
+namespace py = pybind11;
+#define DEVICE_TYPE at::DeviceType::PrivateUse1
 #elif defined(BACKEND_IX)
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -158,7 +163,7 @@ namespace test {
     int device_id_;
     bool initialized_;
 
-#if defined(BACKEND_MUSA)
+#if defined(BACKEND_MUSA) || defined(BACKEND_MLU)
     std::unique_ptr<py::scoped_interpreter> interpreter_;
 #endif
   };

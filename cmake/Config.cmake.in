@@ -48,6 +48,15 @@ elseif(TritonJIT_BACKEND STREQUAL "NPU")
             )
         endif()
     endif()
+  elseif(TritonJIT_BACKEND STREQUAL "MLU")
+    find_package(Python REQUIRED COMPONENTS Interpreter Development)
+    if(NOT DEFINED TorchMLU_ROOT)
+      execute_process(COMMAND ${Python_EXECUTABLE} "-c" "import torch_mlu;print(torch_mlu.utils.cmake_prefix_path)"
+        OUTPUT_VARIABLE TorchMLU_ROOT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+    endif()
+    find_dependency(TorchMLU REQUIRED)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")

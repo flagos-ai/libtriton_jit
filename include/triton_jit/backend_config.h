@@ -6,6 +6,8 @@
 #include "triton_jit/backends/musa_backend.h"
 #elif defined(BACKEND_IX)
 #include "triton_jit/backends/ix_backend.h"
+#elif defined(BACKEND_MLU)
+#include "triton_jit/backends/mlu_backend.h"
 #else
 #include "triton_jit/backends/cuda_backend.h"
 #endif
@@ -26,6 +28,10 @@ using DefaultBackend = NpuBackend;
 #elif defined(BACKEND_MUSA)
 /// Default backend for MUSA (Moore Threads)
 using DefaultBackend = MusaBackend;
+
+#elif defined(BACKEND_MLU)
+/// Default backend for MLU (Cambricon)
+using DefaultBackend = MluBackend;
 
 #elif defined(BACKEND_CUDA)
 /// Default backend for CUDA

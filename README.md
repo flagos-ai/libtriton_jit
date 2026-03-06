@@ -10,6 +10,7 @@ It supports multiple hardware backends through a compile-time backend policy des
 - **MUSA**: Moore Threads GPUs (warp size 32)
 - **NPU**: Ascend/Huawei (ACL API)
 - **IX**: Tianshu GPUs (warp size 64)
+- **MLU**: Cambricon MLUs (warp size 1 or 4)
 
 It aims to reduce the inevitable Python overhead when using Triton in Python code. For many kernels, the execution time of the kernel is much shorter than the CPU overhead. Assume that we define a function(the wrapper) to compute torch tensors, which invokes some triton jit functions. The CPU overhead comes mainly from three parts:
 
@@ -150,6 +151,9 @@ cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=MUSA
 
 # IX (Tianshu)
 cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=IX
+
+# MLU (Cambricon)
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=MLU
 ```
 
 You can also specify build type via `-DCMAKE_BUILD_TYPE` and install prefix by `-DCMAKE_INSTALL_PREFIX`.
@@ -186,7 +190,7 @@ We currently use torch's logging facilities, thus environment variable `TORCH_CP
 
 ## RoadMap
 
-- ~~Support more backends~~ ✓ (CUDA, MUSA, NPU, IX supported)
+- ~~Support more backends~~ ✓ (CUDA, MUSA, NPU, IX, MLU supported)
 - Better argument processing
   - copy arguments to a buffer to ensure their lifetime;
   - add low level API for users to process arguments one by one manually;

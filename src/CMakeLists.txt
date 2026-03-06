@@ -20,6 +20,10 @@ elseif(BACKEND STREQUAL "MUSA")
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch MUSA::musa_runtime fmt::fmt-header-only
       PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "MLU")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch MLU::mlu_runtime fmt::fmt-header-only
+      PRIVATE pybind11::embed)
 else()
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch CUDA::cuda_driver fmt::fmt-header-only

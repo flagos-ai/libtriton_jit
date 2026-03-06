@@ -4,6 +4,7 @@
 
 #include "embedding_op.h"
 #include "operators/common/backend_ops.h"
+#include "operators/common/kernel_config.h"
 #include "operators/common/op_registration.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
@@ -32,8 +33,7 @@ at::Tensor embedding(const at::Tensor& indices, const at::Tensor& weight) {
   int64_t BLOCK_SIZE = 1;
   while (BLOCK_SIZE < embedding_dim) BLOCK_SIZE *= 2;
 
-  constexpr int num_warps = 4;
-  constexpr int num_stages = 1;
+  constexpr auto cfg = triton_jit::ops::default_basic_config();
 
   c10::DeviceGuard guard(weight.device());
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(weight);
@@ -42,8 +42,8 @@ at::Tensor embedding(const at::Tensor& indices, const at::Tensor& weight) {
     num_indices,
     1,
     1,
-    num_warps,
-    num_stages,
+    cfg.num_warps,
+    cfg.num_stages,
     indices_flat,
     weight,
     output,
