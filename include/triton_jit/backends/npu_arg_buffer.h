@@ -120,6 +120,7 @@ class NpuArgBuffer {
  * - "fp32", "fp64" for floats
  * - Pure numbers are constexpr (skipped)
  * - "nullopt" is skipped
+ * - "true"/"false" are boolean constexpr (skipped)
  */
 inline std::vector<NpuArgInfo> parse_signature(const std::string& sig) {
   std::vector<NpuArgInfo> layout;
@@ -134,6 +135,7 @@ inline std::vector<NpuArgInfo> parse_signature(const std::string& sig) {
 
     if (token.empty()) continue;
     if (token == "nullopt") continue;
+    if (token == "true" || token == "false") continue;  // boolean constexpr
 
     bool is_number = !token.empty() && (std::isdigit(token[0]) ||
                                         (token[0] == '-' && token.size() > 1 && std::isdigit(token[1])));
