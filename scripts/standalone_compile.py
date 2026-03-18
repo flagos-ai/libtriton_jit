@@ -268,7 +268,7 @@ def _compile_a_kernel(
                 "cls": "AttrsDescriptor",
             }
         )
-    elif triton_version.major == 3 and triton_version.minor == 3:
+    elif triton_version >= Version("3.3.0"):
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     else:
         raise RuntimeError(
@@ -284,14 +284,14 @@ def _compile_a_kernel(
             constants[i] = None
             signature_without_spec[i] = "constexpr"
 
-    if triton_version == Version("3.1.0"):
+    if Version("3.1.0") <= triton_version < Version("3.2.0"):
         src = triton.compiler.ASTSource(
             fn=fn,
             constants=constants,
             signature=signature_without_spec,
             attrs=attrs,
         )
-    elif triton_version == Version("3.2.0"):
+    elif Version("3.2.0") <= triton_version < Version("3.3.0"):
         arg_names = fn.arg_names
         _constants = {arg_names[i]: v for i, v in constants.items()}
         _signature_without_spec = {

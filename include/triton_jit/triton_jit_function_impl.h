@@ -287,6 +287,7 @@ class TritonJITFunctionImpl {
     // global scratch: introduced in triton 3.3
     // NPU backend does not use global scratch (handled differently via workspace)
     handler.append_global_scratch();
+    handler.append_global_scratch();
 #endif
     std::string full_signature = join_sig(signature);
 
