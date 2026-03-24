@@ -1,142 +1,102 @@
-/**
- * @file triton_jit_function.h
- * @author your name (you@domain.com)
- * @brief TritonJITFunction is a class that wraps triton jit functions so as to be called
- * in c++ project.
- * @version 0.1
- * @date 2025-07-04
- *
- * @copyright Copyright (c) 2025
- *
- */
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
-#include "cuda.h"
 
 #include "fmt/core.h"
+#include "triton_jit/backend_config.h"
+#include "triton_jit/backend_policy.h"
 #include "triton_jit/jit_utils.h"
 #include "triton_jit/triton_kernel.h"
 
 namespace triton_jit {
 
-/**
- * @brief An enum to describe how an argument is handled by the runtime.
- *
- */
-enum struct ArgType : int8_t {
-  NON_CONSTEXPR = 0,  // non-constexpr argument that is not specialized
-  SPECIALIZED = 1,    // non-constexpr argument that is specialized
-  CONSTEXPR = 2,      // constexpr argument(argument to the compiler instead of the kernel)
+template <typename T>
+T get_next_multiple_of(T pos, T step) {
+  return ((pos + step - 1) / step) * step;
+}
+
+struct ParameterBuffer {
+  c10::SmallVector<std::byte> buff_;
+  size_t cursor_ = 0;
+  c10::SmallVector<size_t> offsets_;
+
+  void reserve(size_t new_cap) {
+    const int ESTIMATED_BYTES_PER_ARG = 4;
+    this->buff_.reserve(new_cap * ESTIMATED_BYTES_PER_ARG);
+    this->offsets_.reserve(new_cap);
+  }
+
+  template <typename T>
+  void push_arg(T&& v) {
+    using U = std::decay_t<T>;
+    static_assert(std::is_trivially_copyable_v<U>, "Non trivially copyable type");
+    size_t align = alignof(U);
+    size_t offset = get_next_multiple_of(this->cursor_, align);
+    this->offsets_.push_back(offset);
+
+    size_t size = sizeof(U);
+    this->buff_.resize(offset + size);
+    std::byte* ptr = this->buff_.data() + offset;
+    std::memcpy(ptr, &v, size);
+
+    this->cursor_ = offset + size;
+  }
+
+  c10::SmallVector<void*> get_ptrs() {
+    c10::SmallVector<void*> ptrs;
+    ptrs.reserve(this->offsets_.size());
+    std::byte* start = this->buff_.data();
+    for (const size_t off : this->offsets_) {
+      ptrs.push_back(start + off);
+    }
+    return ptrs;
+  }
+
+  size_t size() const {
+    return this->offsets_.size();
+  }
 };
 
-/**
- * @brief Description of a triton jit function on how it handles its arguments
- *
- * StaticSignature is dependent only on the function definition (and the triton.jit
- * decorator) itself without passing actual arguments. This is what the 'static' here
- * means
- */
+enum struct ArgType : int8_t {
+  NON_CONSTEXPR = 0,
+  SPECIALIZED = 1,
+  CONSTEXPR = 2,
+};
+
 struct StaticSignature {
   int num_args;
   std::vector<ArgType> arg_type;
 
-  const ArgType &at(size_t i) const {
+  const ArgType& at(size_t i) const {
     return arg_type.at(i);
   }
 };
 
-/**
- * @brief An class to wrap triton jit function for it to be called in c++.
- *
- * Wrap a triton jit function given the path in which it is defined and the function
- * name, then you can call it in c++ in almost the same way as in python.
- */
-class TritonJITFunction {
- private:
-  std::string file_path_;
-  std::string function_name_;
-  StaticSignature static_sig_;
-  // the cached compiled TritonKernel of this TritonJITFunction
-  mutable std::unordered_map<std::string, TritonKernel> overloads_;
-
-  // a registry to hold all TritonJITFunctions
-  static std::unordered_map<std::string, TritonJITFunction> functions_;
-
- public:
-  static TritonJITFunction &get_instance(std::string_view path, std::string_view name);
-  TritonJITFunction(const TritonJITFunction &) = delete;
-  TritonJITFunction &operator=(const TritonJITFunction &) = delete;
-  TritonJITFunction(TritonJITFunction &&) = default;
-  TritonJITFunction &operator=(TritonJITFunction &&) = default;
-
-  const StaticSignature &get_static_sig() const {
-    return this->static_sig_;
-  }
-  /**
-   * Get or Add a TritonKernel corresponding to the signature, compile options and device index.
-   * It may trigger triton.compile via the embedded python interpreter.
-   */
-  const TritonKernel &get_kernel(std::string_view signature,
-                                 int num_warps,
-                                 int num_stages,
-                                 CUdevice device_index) const;
-
-  template <typename... Args>
-  void operator()(CUstream stream,
-                  unsigned int grid_x,
-                  unsigned int grid_y,
-                  unsigned int grid_z,
-                  unsigned int num_warps,
-                  unsigned int num_stages,
-                  Args... args) const;
-
-  /**
-   * A Low level API to launch Triton Kernel directly with pointers to all kernel args. This is
-   * a thin wrapper around cuLaunchKernel. It is experimental and subject to change. It is
-   * designed to be used manual argument processing. An argument-buffer-like design is working in
-   * progress now to support more flexible argument processing.
-   */
-  void launch_with_raw_args(CUstream stream,
-                            unsigned int grid_x,
-                            unsigned int grid_y,
-                            unsigned int grid_z,
-                            unsigned int num_warps,
-                            unsigned int num_stages,
-                            std::string full_signature,
-                            void **args) const;
-
- private:
-  TritonJITFunction(std::string_view path, std::string_view name);
-};
-
 struct ArgHandle {
-  const StaticSignature &ssig;
+  const StaticSignature& ssig;
   /* data pointer of Tensors;
-  It is not that straigt extract data pointer from a tensor, since it is encapsulated
+  It is not straightforward to extract data pointer from a tensor, since it is encapsulated
   by Storage. We gather data pointers here for them to live out of the loop while iterating
   over arguments.*/
-  ParameterBuffer &buf;
-  c10::SmallVector<std::string> &signature;
+  ParameterBuffer& buf;
+  c10::SmallVector<std::string>& signature;
   int idx;
 
-  /***
-   * Iterate over the args and populate data_pointers, kernel_args and signature according to
-   * to rules of Triton's jit runtime.
-   */
   template <typename... Args>
   void handle_args(Args... args) {
     (handle_arg(args), ...);
   }
 
   template <typename T>
-  void handle_arg(const T &item) {
+  void handle_arg(const T& item) {
     if constexpr (is_optional<decltype(item)>::value) {
       handle_optional(item);
     } else if constexpr (is_same_ignore_cvref<c10::Scalar, T>::value) {
@@ -147,80 +107,90 @@ struct ArgHandle {
   }
 
   template <typename T>
-  void handle_optional(const std::optional<T> &item) {
+  void handle_optional(const std::optional<T>& item) {
     if (item.has_value()) {
-      const T &v = item.value();
+      const T& v = item.value();
       handle_arg(v);
     } else {
       handle_arg(std::nullopt);
     }
   }
 
-  void handle_scalar(const c10::Scalar &item) {
+  void handle_scalar(const c10::Scalar& item) {
     TORCH_CHECK(!item.isSymbolic());
     c10::ScalarType tp = item.type();
-    const void *p = item.data_ptr();
+    const void* p = item.data_ptr();
     if (tp == c10::ScalarType::Bool) {
-      handle_arg_plain(*reinterpret_cast<const bool *>(p));
+      handle_arg_plain(*reinterpret_cast<const bool*>(p));
     } else if (tp == c10::ScalarType::Long) {
-      handle_arg_plain(*reinterpret_cast<const int64_t *>(p));
+      handle_arg_plain(*reinterpret_cast<const int64_t*>(p));
     } else if (tp == c10::ScalarType::UInt64) {
-      handle_arg_plain(*reinterpret_cast<const uint64_t *>(p));
+      handle_arg_plain(*reinterpret_cast<const uint64_t*>(p));
     } else if (tp == c10::ScalarType::Double) {
-      handle_arg_plain(*reinterpret_cast<const double *>(p));
+      handle_arg_plain(*reinterpret_cast<const double*>(p));
     } else {
       throw std::runtime_error("unsupported scalar type.");
     }
   }
 
   template <typename T>
-  void handle_arg_plain(const T &item) {
+  void handle_arg_plain(const T& item) {
     if constexpr (is_same_ignore_cvref<at::Tensor, T>::value) {
       handle_tensor(item);
     } else if constexpr (is_same_ignore_cvref<std::nullopt_t, T>::value) {
-      // Assumption nullopt is alway treated as constexpr,
+      // Assumption: nullopt is always treated as constexpr,
       // even if the parameter is not marked as constexpr
       signature.push_back("nullopt");
     } else {
       if (ssig.at(idx) == ArgType::CONSTEXPR) {  // constexpr
         handle_constexpr(item);
-      } else if (ssig.at(idx) == ArgType::SPECIALIZED) {  // specialzied
+      } else if (ssig.at(idx) == ArgType::SPECIALIZED) {  // specialized
         handle_specialized(item);
-      } else {  // ArgType::NON-CONSTEXPR
+      } else {  // ArgType::NON_CONSTEXPR
         handle_non_constexpr(item);
       }
     }
     idx++;
   }
 
-  void handle_tensor(const at::Tensor &item) {
-    // Assumuption: Tensor is never constexpr
+  void handle_tensor(const at::Tensor& item) {
+    // Assumption: Tensor is never constexpr
     TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR);
-    void *p_item = item.data_ptr();
+    void* p_item = item.data_ptr();
     this->buf.push_arg(p_item);
-    const char *dtype = to_triton_typename(item.scalar_type());
+    const char* dtype = to_triton_typename(item.scalar_type());
 
-    const char *specialization = "";
+    const char* specialization = "";
     if (ssig.at(idx) == ArgType::SPECIALIZED) {
+#if defined(BACKEND_NPU)
+      // NPU: disable :1 specialization to keep arg list consistent
+#else
       specialization = spec(reinterpret_cast<std::uintptr_t>(p_item));
+#endif
     }
     std::string sig_for_idx = fmt::format("*{}{}", dtype, specialization);
     signature.push_back(sig_for_idx);
   }
 
   template <typename T>
-  void handle_constexpr(const T &item) {
+  void handle_constexpr(const T& item) {
     signature.push_back(fmt::format("{}", item));
   }
 
   template <typename T>
-  void handle_specialized(const T &item) {
-    const char *dtype = triton_type<decltype(item)>::name;
+  void handle_specialized(const T& item) {
+    const char* dtype = triton_type<decltype(item)>::name;
     if constexpr (std::is_integral_v<std::remove_cv_t<std::remove_reference_t<decltype(item)>>>) {
-      const char *specialization = spec(item);
+      const char* specialization = "";
+#if defined(BACKEND_NPU)
+      // NPU: disable :1 specialization so args are always passed
+      this->buf.push_arg(item);
+#else
+      specialization = spec(item);
       if (specialization != ":1") {
         this->buf.push_arg(item);
       }
+#endif
       std::string sig_for_idx = fmt::format("{}{}", dtype, specialization);
       signature.push_back(sig_for_idx);
     } else {
@@ -231,64 +201,139 @@ struct ArgHandle {
   }
 
   template <typename T>
-  void handle_non_constexpr(const T &item) {
+  void handle_non_constexpr(const T& item) {
     this->buf.push_arg(item);
-    const char *dtype = triton_type<decltype(item)>::name;
+    const char* dtype = triton_type<decltype(item)>::name;
     signature.push_back(dtype);
   }
 
-  void append_scratch() {
-    void *global_scratch = nullptr;
+  void append_global_scratch() {
+    void* global_scratch = nullptr;
     this->buf.push_arg(global_scratch);
-#ifdef TRITON_GE_3P5
-    void *profile_scratch = nullptr;
-    this->buf.push_arg(profile_scratch);
-#endif
   }
 };
 
-/***
- * The mainly used method of TritonJITFunction. It can be used with different triton functions
- * with different arguments. The main work are signature extraction; kernel arg extraction and
- * kernel launch.
- *
- * Arguments consist of 2 parts:
- * fixed part: stream, grid, compile options;
- * variadic part: arguments to the triton function.ArgHandle
- *
- * TODO:
- * customization point: compile options for different backends may be different.
- */
-template <typename... Args>
-void TritonJITFunction::operator()(CUstream stream,
-                                   unsigned int grid_x,
-                                   unsigned int grid_y,
-                                   unsigned int grid_z,
-                                   unsigned int num_warps,
-                                   unsigned int num_stages,
-                                   Args... args) const {
-  const int num_args = this->static_sig_.num_args;
+template <BackendPolicy Backend>
+class TritonJITFunctionImpl {
+ private:
+  std::string file_path_;
+  std::string function_name_;
+  StaticSignature static_sig_;
 
-  ParameterBuffer buffer;
-  buffer.reserve(num_args);  // this is a coarse estimation of parameter size
-  c10::SmallVector<std::string> signature;
-  signature.reserve(num_args);
+  /// Cached compiled kernels (keyed by signature)
+  mutable std::unordered_map<std::string, TritonKernelImpl<Backend>> overloads_;
 
-  ArgHandle handler = {this->static_sig_, buffer, signature, 0};
-  (handler.handle_arg(args), ...);
+  /// Global registry of all TritonJITFunctionImpl instances
+  static std::unordered_map<std::string, std::unique_ptr<TritonJITFunctionImpl<Backend>>> functions_;
 
-  // global scratch: introduced in triton 3.3
-  handler.append_scratch();
-  std::string full_signature = join_sig(signature);
+ public:
+  static TritonJITFunctionImpl& get_instance(std::string_view path, std::string_view name) {
+    std::string key = fmt::format("{}:{}", path, name);
 
-  // TODO: use torch backend-agnostic device APIs
-  ensure_cuda_context();
-  CUdevice device_index;
-  checkCudaErrors(cuCtxGetDevice(&device_index));
-  const TritonKernel &kernel = this->get_kernel(full_signature, num_warps, num_stages, device_index);
-  c10::SmallVector<void *> ptrs = buffer.get_ptrs();
-  kernel.launch(grid_x, grid_y, grid_z, num_warps, stream, ptrs.data());
-  return;
-}
-static_assert(std::is_move_constructible_v<TritonJITFunction>);
+    auto it = functions_.find(key);
+    if (it == functions_.end()) {
+      // Use new instead of make_unique since constructor is private
+      auto ptr = std::unique_ptr<TritonJITFunctionImpl>(new TritonJITFunctionImpl(path, name));
+      functions_.emplace(key, std::move(ptr));
+    }
+
+    return *functions_.at(key);
+  }
+
+  // Delete copy constructor and assignment
+  TritonJITFunctionImpl(const TritonJITFunctionImpl&) = delete;
+  TritonJITFunctionImpl& operator=(const TritonJITFunctionImpl&) = delete;
+
+  // Default move constructor and assignment
+  TritonJITFunctionImpl(TritonJITFunctionImpl&&) = default;
+  TritonJITFunctionImpl& operator=(TritonJITFunctionImpl&&) = default;
+
+  const StaticSignature& get_static_sig() const {
+    return this->static_sig_;
+  }
+
+  template <typename... Args>
+  void operator()(typename Backend::StreamType stream,
+                  unsigned int grid_x,
+                  unsigned int grid_y,
+                  unsigned int grid_z,
+                  unsigned int num_warps,
+                  unsigned int num_stages,
+                  Args... args) const {
+    const int num_args = this->static_sig_.num_args;
+
+    // Storage for argument processing using ParameterBuffer
+    ParameterBuffer buffer;
+    buffer.reserve(num_args);  // this is a coarse estimation of parameter size
+    c10::SmallVector<std::string> signature;
+    signature.reserve(num_args);
+
+    // Process arguments
+    ArgHandle handler = {this->static_sig_, buffer, signature, 0};
+    (handler.handle_arg(args), ...);
+
+#if !defined(BACKEND_NPU)
+    // global scratch: introduced in triton 3.3
+    // NPU backend does not use global scratch (handled differently via workspace)
+    handler.append_global_scratch();
+    handler.append_global_scratch();
+#endif
+    std::string full_signature = join_sig(signature);
+
+    // Backend-specific context setup
+    Backend::ensure_context();
+    int device_index = Backend::get_device_index();
+
+    // Get or compile kernel
+    const TritonKernelImpl<Backend>& kernel =
+        this->get_kernel(full_signature, num_warps, num_stages, device_index);
+
+    // Launch kernel with signature (for NPU backend to parse argument types)
+    c10::SmallVector<void*> ptrs = buffer.get_ptrs();
+    kernel.launch_with_signature(grid_x,
+                                 grid_y,
+                                 grid_z,
+                                 num_warps,
+                                 stream,
+                                 ptrs.data(),
+                                 full_signature,
+                                 ptrs.size());
+  }
+
+  void launch_with_raw_args(typename Backend::StreamType stream,
+                            unsigned int grid_x,
+                            unsigned int grid_y,
+                            unsigned int grid_z,
+                            unsigned int num_warps,
+                            unsigned int num_stages,
+                            std::string full_signature,
+                            void** args,
+                            size_t num_args = 0) const {
+    Backend::ensure_context();
+    int device_index = Backend::get_device_index();
+
+    const TritonKernelImpl<Backend>& kernel =
+        this->get_kernel(full_signature, num_warps, num_stages, device_index);
+
+    kernel.launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream, args, full_signature, num_args);
+  }
+
+ private:
+  TritonJITFunctionImpl(std::string_view path, std::string_view name);
+  const TritonKernelImpl<Backend>& get_kernel(std::string_view signature,
+                                              int num_warps,
+                                              int num_stages,
+                                              int device_index) const;
+};
+
+// Initialize static member
+template <BackendPolicy Backend>
+std::unordered_map<std::string, std::unique_ptr<TritonJITFunctionImpl<Backend>>>
+    TritonJITFunctionImpl<Backend>::functions_;
+
+// Compile-time checks
+template <BackendPolicy Backend>
+static inline constexpr bool is_triton_jit_function_move_constructible_v =
+    std::is_move_constructible_v<TritonJITFunctionImpl<Backend>>;
+
 }  // namespace triton_jit

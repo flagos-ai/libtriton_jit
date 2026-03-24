@@ -2,10 +2,17 @@
 
 ## Introduction
 
-The `libtriton_jit` project is an implementation of the Triton runtime in C++.
+The `libtriton_jit` project is a multi-backend C++ runtime for Triton JIT functions.
 It offers shims to make it easier to use Triton Lang inside a C++-based project.
-The user experience is similar to that of Triton's native Python runtime.
+The user experience is similar to Triton's native Python runtime.
 You can define JIT functions in Python scripts and then invoke them in C++ code.
+
+It supports multiple hardware backends through a compile-time backend policy design (C++20 concepts):
+
+- **CUDA**: NVIDIA GPUs (warp size 32)
+- **MUSA**: Moore Threads GPUs (warp size 32)
+- **NPU**: Ascend/Huawei (ACL API)
+- **IX**: Tianshu GPUs (warp size 64)
 
 The project aims to reduce the inevitable Python overhead when using Triton in Python code.
 For many kernels, the execution time of the kernel is much shorter than the CPU overhead.
@@ -106,12 +113,10 @@ So the Python file should be able to be imported directly. **It must not use rel
 
 Along with the process of composing the full signature, arguments for the kernel launch are also gathered
 while arguments for the compiler are filtered out.
-Then the arguments for the compiled kernel are used via a low-level driver API.
-Currently it supports CUDA driver API.
-The CUDA driver API `cuLaunchKernel` erases the type of all arguments by taking addresses of them via a pointer to void (`void*`).
-Backends with similar APIs can adapt the code to launch kernels. But other backends are also considered.
-For backends without such an indirect call API via type erasure, the captured type information from the callsite can be used
-to redirect the call to the kernel. Hopefully, we may see them soon.
+Then the arguments for the compiled kernel are launched via backend-specific driver APIs.
+Each backend implements a `BackendPolicy` concept that provides `load_kernel`, `launch_kernel`,
+`prepare_launch`, and other methods. The framework layer (`triton_kernel.h`) is completely
+backend-agnostic — adding a new backend only requires defining a new struct satisfying the `BackendPolicy` concept.
 
 This is the main facilities for calling jit functions from C++, which can be used to write operators.
 
@@ -198,10 +203,20 @@ pip install "torch>=2.5" "triton>=3.1.0,<3.4.0" "cmake" "ninja" "packaging" "pyb
 
 ### Configure & Generate the Build System
 
-Remember to specify which Python root to use, since the Python root is used to find `libtorch` and `pybind11`.
+Remember to specify which Python root to use, since the Python root is used to find `libtorch` and `pybind11`. Use `-DBACKEND=` to select the target backend.
 
 ```shell
-cmake -S . -B build/ -DPython_ROOT="$(which python)/../.."
+# CUDA (default)
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=CUDA
+
+# NPU (Ascend)
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=NPU
+
+# MUSA (Moore Threads)
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=MUSA
+
+# IX (Tianshu)
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=IX
 ```
 
 You can also specify build type via `-DCMAKE_BUILD_TYPE` and the install prefix using `-DCMAKE_INSTALL_PREFIX`.
@@ -238,12 +253,7 @@ For example, `export TORCH_CPP_LOG_LEVEL=INFO`.
 
 ## Roadmap
 
-- Support more backends
-
-  - handle compile options for different backends
-  - handle argument processing rules for different backends, if they have different rules to route the arguments;
-  - support driver APIs for different backends (for TritonKernels's `launch` and `lazy_init_handle` method);
-
+- ~~Support more backends~~ ✓ (CUDA, MUSA, NPU, IX supported)
 - Better argument processing
 
   - copy arguments to a buffer to ensure their lifetime;
@@ -252,6 +262,5 @@ For example, `export TORCH_CPP_LOG_LEVEL=INFO`.
 - Expose Lower level APIs to be independent from libtorch
   - Use typed pointers as parameters instead of Tensors;
   - Considerations: delegate tensor allocation and metadata computation to other tensor libraries;
-
-- support auto-tunning
-  - Implement caching auto-tuner
+- Support auto tuning:
+  - Implement caching auto tuner

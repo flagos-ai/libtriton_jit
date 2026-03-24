@@ -5,14 +5,32 @@
 # the cxx flags from torch, so we just merge then as one target, for simplicity
 # then it can use the same cxx flags with public dependency transitivity
 # --------------------------- triton jit function ---------------------------
-add_library(triton_jit SHARED triton_jit_function.cpp jit_utils.cpp triton_kernel.cpp)
+add_library(triton_jit SHARED triton_jit_function.cpp jit_utils.cpp kernel_metadata.cpp)
 target_include_directories(triton_jit
   PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_link_libraries(triton_jit
-  PUBLIC Torch::Torch CUDA::cuda_driver fmt::fmt-header-only
-  PRIVATE nlohmann_json::nlohmann_json pybind11::embed)
+
+# Backend-specific link libraries
+if(BACKEND STREQUAL "NPU")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch Ascend::ascendcl Ascend::runtime fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "MUSA")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch MUSA::musa_runtime fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+else()
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch CUDA::cuda_driver fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+endif()
+
+# Set backend compile definition based on BACKEND variable
+target_compile_definitions(triton_jit PUBLIC BACKEND_${BACKEND})
+
+# nlohmann_json is only used in kernel_metadata.cpp, keep it PRIVATE
+target_link_libraries(triton_jit PRIVATE nlohmann_json::nlohmann_json)
 
 # --------------------------- alias targets ---------------------------
 # This is the target used in FetchContent, since FetchContent use add_subdirectory (a sub project build)

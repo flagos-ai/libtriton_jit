@@ -1,4 +1,3 @@
-
 add_custom_target(
     copy_triton_axpy_src
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -9,7 +8,7 @@ add_custom_target(
 
 add_library(axpy_op SHARED axpy_op.cpp)
 target_include_directories(axpy_op
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/examples
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(axpy_op

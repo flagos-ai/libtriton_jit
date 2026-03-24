@@ -1,5 +1,7 @@
-#include <iostream>
-#include "c10/cuda/CUDAStream.h"
+#include "sum_op.h"
+#include "common/backend_ops.h"
+#include "common/kernel_config.h"
+#include "common/op_registration.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
 
@@ -9,7 +11,7 @@
 #include "c10/util/DimVector.h"
 
 std::tuple<at::Tensor, int64_t, int64_t> permute_reduction_axes_right(
-    const at::Tensor &tensor, at::OptionalIntArrayRef reduction_axes_opt) {
+    const at::Tensor& tensor, at::OptionalIntArrayRef reduction_axes_opt) {
   int64_t dim = tensor.dim();
   c10::DimVector reduction_axes;
 
@@ -32,7 +34,6 @@ std::tuple<at::Tensor, int64_t, int64_t> permute_reduction_axes_right(
     }
   }
 
-  // Concatenate left and right axes to form the new permutation order
   c10::DimVector permute_order = left_axes;
   permute_order.insert(permute_order.end(), right_axes.begin(), right_axes.end());
 
@@ -40,14 +41,12 @@ std::tuple<at::Tensor, int64_t, int64_t> permute_reduction_axes_right(
 }
 
 namespace my_ops {
-// signature
-// sum.dim_IntList(Tensor self, int[1]? dim, bool keepdim=False, *, ScalarType?
-// dtype=None) -> Tensor
-at::Tensor sum_dim(const at::Tensor &self,
+using namespace triton_jit;
+
+at::Tensor sum_dim(const at::Tensor& self,
                    at::OptionalIntArrayRef dim,
                    bool keepdim,
                    ::std::optional<at::ScalarType> dtype) {
-  // permute reduction dims to the right, and make the input contiguous
   at::DimVector dims_ = at::native::make_dim_vector(dim, self.dim());
   at::maybe_wrap_dims(dims_, self.dim());
   at::DimVector shape = at::meta::get_reduction_shape(self, dims_, keepdim, false);
@@ -56,38 +55,34 @@ at::Tensor sum_dim(const at::Tensor &self,
   auto [permuted_self, non_reduction_size, reduction_size] = permute_reduction_axes_right(self, dims_);
   permuted_self = permuted_self.contiguous();
 
-  // def sum_kernel(in_ptr, out_ptr, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, STAGE: tl.constexpr):
-  using namespace triton_jit;
-  const TritonJITFunction &f = TritonJITFunction::get_instance("./sum.py", "sum_kernel");
-  int64_t tile_m = 4;
-  int64_t tile_n = 512;
-  const int num_warps = 8;
-  const int num_stages = 2;
-  const unsigned int num_blocks = (non_reduction_size + tile_m - 1) / tile_m;
+  const TritonJITFunction& f = TritonJITFunction::get_instance("./sum.py", "sum_dim_kernel");
+
+  constexpr auto cfg = triton_jit::ops::default_reduce_sum_config();
+
+  const unsigned int num_blocks = (non_reduction_size + cfg.BLOCK_M - 1) / cfg.BLOCK_M;
 
   c10::DeviceGuard guard(out.device());
-  c10::cuda::CUDAStream stream = c10::cuda::getCurrentCUDAStream();
-  CUstream raw_stream = static_cast<CUstream>(stream.stream());
+  triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(permuted_self);
+
   f(stream,
     num_blocks,
     1,
     1,
-    num_warps,
-    num_stages,
+    cfg.num_warps,
+    cfg.num_stages,
     permuted_self,
     out,
     non_reduction_size,
     reduction_size,
-    tile_m,
-    tile_n,
-    num_stages);
+    cfg.BLOCK_M,
+    cfg.BLOCK_N);
   return out;
 }
 
-TORCH_LIBRARY(my_ops, m) {
-  m.def("sum.dim_IntList(Tensor self, int[1]? dim, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor");
+TORCH_LIBRARY(sum_ops, m) {
+  m.def("sum_dim(Tensor self, int[1]? dim, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor");
 }
-TORCH_LIBRARY_IMPL(my_ops, CUDA, m) {
-  m.impl("sum.dim_IntList", TORCH_FN(sum_dim));
-}
+
+REGISTER_TRITON_OP(sum_ops, "sum_dim", sum_dim)
+
 }  // namespace my_ops

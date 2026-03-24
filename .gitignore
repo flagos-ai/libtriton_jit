@@ -40,6 +40,7 @@ __pycache__
 CMakeFiles/
 CMakeCache.txt
 *.cmake
+!cmake/*.cmake
 *.make
 *.dir
 *.marks
@@ -52,3 +53,20 @@ cmake_install.cmake
 # Other temporary files
 *.log
 *.tmp
+*.bak
+
+# IDE/Editor cache
+.cache/
+
+# Debug scripts (not needed in repo)
+debug_*.sh
+auto_compare_*.py
+DEBUG_GUIDE.md
+
+# Claude Code
+CLAUDE.md
+AGENTS.md
+.claude/
+
+# Tests (run locally only)
+tests/

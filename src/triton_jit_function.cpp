@@ -2,31 +2,47 @@
 
 #include <algorithm>
 #include <cassert>
+#include <filesystem>
+#include <mutex>
 #include <string>
 #include <vector>
 
-#include <type_traits>
-#include <utility>
-#include "c10/util/Logging.h"  // use torch's logging
+#include "c10/util/Logging.h"
 #include "fmt/core.h"
-#include "nlohmann/json.hpp"
-
 #include "pybind11/embed.h"
 
 namespace triton_jit {
-std::unordered_map<std::string, TritonJITFunction> TritonJITFunction::functions_;
 
-void ensure_initialized() {
-  // When using libtriton_jit with a python C-extension, it is already initialized
-  c10::initLogging();
-  if (!Py_IsInitialized()) {
-    Py_InitializeEx(false);
-  }
+static void ensure_initialized() {
+  // Use std::call_once to ensure initialization happens only once
+  static std::once_flag init_flag;
+  std::call_once(init_flag, []() {
+    c10::initLogging();
+    if (!Py_IsInitialized()) {
+      Py_InitializeEx(false);
+    }
+    // Set Python os.environ directly via pybind11
+    namespace py = pybind11;
+    py::gil_scoped_acquire gil;
+    py::module_::import("os").attr("environ")["TRITON_JIT_BACKEND"] = BACKEND_NAME;
+
+    // Import backend-specific modules for device registration
+    std::string backend_name(BACKEND_NAME);
+    if (backend_name == "mtgpu") {
+      try {
+        // Import torch_musa to register MUSA as PrivateUse1 backend
+        py::module_::import("torch_musa");
+      } catch (const py::error_already_set& e) {
+        std::cerr << "Warning: Failed to import torch_musa: " << e.what() << std::endl;
+      }
+    }
+  });
 }
 
-TritonJITFunction::TritonJITFunction(std::string_view path, std::string_view name)
+template <BackendPolicy Backend>
+TritonJITFunctionImpl<Backend>::TritonJITFunctionImpl(std::string_view path, std::string_view name)
     : file_path_(std::string(path)), function_name_(std::string(name)) {
-  // embed python
+  // Embed Python to extract static signature
   namespace py = pybind11;
   ensure_initialized();
   py::gil_scoped_acquire gil;
@@ -52,15 +68,17 @@ TritonJITFunction::TritonJITFunction(std::string_view path, std::string_view nam
   this->static_sig_ = StaticSignature {num_args, arg_types};
 }
 
-const TritonKernel& TritonJITFunction::get_kernel(std::string_view _signature,
-                                                  int num_warps,
-                                                  int num_stages,
-                                                  CUdevice device_index) const {
+template <BackendPolicy Backend>
+const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std::string_view _signature,
+                                                                            int num_warps,
+                                                                            int num_stages,
+                                                                            int device_index) const {
   std::string signature(_signature);
   std::string key = fmt::format("{};{}", signature, device_index);
+
   auto pos = this->overloads_.find(key);
   if (pos == this->overloads_.end()) {
-    // embed python
+    // Compile kernel via Python
     namespace py = pybind11;
     ensure_initialized();
     py::gil_scoped_acquire gil;
@@ -75,50 +93,40 @@ const TritonKernel& TritonJITFunction::get_kernel(std::string_view _signature,
       ans = fn(this->file_path_, this->function_name_, signature, num_warps, num_stages, device_index);
     } catch (const py::error_already_set& e) {
       std::cerr << "Python exception: " << e.what() << std::endl;
+      throw;
     }
+
     std::string cache_dir = ans.cast<std::string>();
-    TritonKernel k(cache_dir, this->function_name_);
+    TritonKernelImpl<Backend> k(cache_dir, this->function_name_);
+
     auto result = this->overloads_.emplace(std::move(key), std::move(k));
     if (result.second) {
       pos = result.first;
     } else {
-      throw std::runtime_error("Unable to emplace the kernel into TritonJITFunction's cache");
+      throw std::runtime_error("Unable to emplace the kernel into TritonJITFunctionImpl's cache");
     }
   }
   return pos->second;
 }
 
-TritonJITFunction& TritonJITFunction::get_instance(std::string_view path, std::string_view name) {
-  std::string function_id = fmt::format("{}:{}", path, name);
-  auto pos = TritonJITFunction::functions_.find(function_id);
-
-  if (pos == TritonJITFunction::functions_.end()) {
-    TritonJITFunction f(path, name);
-    auto result = TritonJITFunction::functions_.emplace(std::move(function_id), std::move(f));
-    if (result.second) {
-      pos = result.first;
-    } else {
-      throw std::runtime_error("Unable to emplace the TritonJITFunction into Multiton cache.");
-    }
-  }
-  return pos->second;
-}
-
-void TritonJITFunction::launch_with_raw_args(CUstream stream,
-                                             unsigned int grid_x,
-                                             unsigned int grid_y,
-                                             unsigned int grid_z,
-                                             unsigned int num_warps,
-                                             unsigned int num_stages,
-                                             std::string full_signature,
-                                             void** args) const {
-  CUcontext ctx;
-  checkCudaErrors(cuStreamGetCtx(stream, &ctx));
-  checkCudaErrors(cuCtxSetCurrent(ctx));
-  CUdevice d;
-  checkCudaErrors(cuCtxGetDevice(&d));
-  // LOG(INFO) << fmt::format("launching kernel");
-  const TritonKernel& kernel = this->get_kernel(full_signature, num_warps, num_stages, d);
-  kernel.launch(grid_x, grid_y, grid_z, num_warps, stream, args);
-}
 }  // namespace triton_jit
+
+#ifdef BACKEND_NPU
+#include "triton_jit/backends/npu_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::NpuBackend>;
+#endif
+
+#ifdef BACKEND_CUDA
+#include "triton_jit/backends/cuda_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::CudaBackend>;
+#endif
+
+#ifdef BACKEND_IX
+#include "triton_jit/backends/ix_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::IxBackend>;
+#endif
+
+#ifdef BACKEND_MUSA
+#include "triton_jit/backends/musa_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::MusaBackend>;
+#endif

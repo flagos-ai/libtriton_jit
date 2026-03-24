@@ -1,11 +1,32 @@
 import importlib.util
+import json
+import os
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import List, Tuple, Union
 
-import torch
-import triton
-from packaging.version import Version
+# NPU and MTGPU require this before importing triton
+backend_env = os.environ.get("TRITON_JIT_BACKEND", "").upper()
+if backend_env in ["NPU", "MTGPU"]:
+    os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+
+import torch  # noqa: E402
+
+# Import backend-specific modules to activate Triton driver
+if backend_env == "MTGPU":
+    try:
+        import torch_musa  # noqa: F401 - Activate MUSA device and Triton mtgpu driver
+    except ImportError:
+        print("Warning: torch_musa not available, MTGPU backend may not work")
+
+import triton  # noqa: E402
+from packaging.version import Version  # noqa: E402
+
+
+def get_backend():
+    """Get backend from environment variable (set by C++ at runtime)."""
+    return os.environ.get("TRITON_JIT_BACKEND", "CUDA").upper()
+
 
 # do not specifier a cache dir for libtriton jit now
 # pylint: disable-next=wrong-import-position
@@ -51,6 +72,93 @@ def ty_to_cpp(ty):
         "f32": "float",
         "fp64": "double",
     }[ty]
+
+
+def sig_to_npu_type(sig: str) -> dict:
+    """Convert signature type string to NPU arg_layout format.
+
+    Args:
+        sig: Type string like "*fp32", "i64", "*fp16:16", etc.
+
+    Returns:
+        dict with 'type' and optionally 'dtype' keys, or None for constexpr
+    """
+    # Remove specialization suffix
+    sig = sig.split(":")[0].strip()
+
+    if sig.startswith("*"):
+        # Pointer type
+        dtype = sig[1:]  # e.g., "fp32", "fp16", "i32"
+        return {"type": "ptr", "dtype": dtype}
+    elif sig in ("i64", "u64"):
+        return {"type": "i64"}
+    elif sig in ("i32", "u32"):
+        return {"type": "i32"}
+    elif sig in ("i16", "u16", "i8", "u8", "i1", "u1"):
+        return {"type": "i32"}  # Promoted to i32
+    elif sig in ("fp64", "f64"):
+        return {"type": "fp64"}
+    elif sig in ("fp32", "f32"):
+        return {"type": "fp32"}
+    elif sig in ("fp16", "f16", "bf16"):
+        return {"type": "fp32"}  # Promoted to fp32
+    elif sig == "constexpr" or sig == "nullopt":
+        return {"type": "constexpr"}
+    else:
+        # Try to parse as constexpr number
+        try:
+            int(sig)
+            return {"type": "constexpr"}
+        except ValueError:
+            try:
+                float(sig)
+                return {"type": "constexpr"}
+            except ValueError:
+                # Unknown type, default to i64
+                return {"type": "i64"}
+
+
+def generate_arg_layout(
+    signature: List[str], constexpr_indices: List[int]
+) -> List[dict]:
+    """Generate arg_layout metadata from signature.
+
+    Args:
+        signature: List of signature strings like ["*fp32:16", "*fp32", "i64", "1024"]
+        constexpr_indices: List of indices that are constexpr
+
+    Returns:
+        List of arg_layout dicts for runtime arguments only (excluding constexpr)
+    """
+    arg_layout = []
+
+    for i, sig in enumerate(signature):
+        # Check if this is a constexpr by index or by value
+        if i in constexpr_indices:
+            continue
+
+        # Try to parse as constexpr value
+        sig_clean = sig.split(":")[0].strip()
+        try:
+            int(sig_clean)
+            continue  # It's a constexpr number
+        except ValueError:
+            pass
+        try:
+            float(sig_clean)
+            continue  # It's a constexpr number
+        except ValueError:
+            pass
+
+        if sig_clean == "nullopt":
+            continue  # Skip nullopt
+
+        # Convert to NPU type
+        type_info = sig_to_npu_type(sig)
+        if type_info["type"] != "constexpr":
+            arg_layout.append(type_info)
+
+    return arg_layout
 
 
 def parse_bool(s: str) -> bool:
@@ -160,17 +268,18 @@ def _compile_a_kernel(
                 "cls": "AttrsDescriptor",
             }
         )
-    elif triton_version.major == 3 and triton_version.minor == 3:
+    elif triton_version >= Version("3.3.0"):
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     elif triton_version.major == 3 and triton_version.minor == 4:
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     elif triton_version.major == 3 and triton_version.minor == 5:
-        attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}    
+        attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     else:
         raise RuntimeError(
-            "Triton may change APIs, we cannot ensure compatibility here now. You can goto https://github.com/flagos-ai/libtriton_jit to raise an issue about supporting your triton version. Triton 3.1/3.2/3.3/3.4/3.5 are supported now."
+            "Triton may change APIs, we cannot ensure compatibility here now. "
+            "You can goto https://github.com/flagos-ai/libtriton_jit to raise an issue "
+            "about supporting your triton version. Triton 3.1/3.2/3.3/3.4/3.5 are supported now."
         )
-
 
     # integer 1 in value, but the corresponding ArgType in static signature is not constexpr are added into constants
     for i in equal_to_1:
@@ -181,14 +290,14 @@ def _compile_a_kernel(
             constants[i] = None
             signature_without_spec[i] = "constexpr"
 
-    if triton_version == Version("3.1.0"):
+    if Version("3.1.0") <= triton_version < Version("3.2.0"):
         src = triton.compiler.ASTSource(
             fn=fn,
             constants=constants,
             signature=signature_without_spec,
             attrs=attrs,
         )
-    elif triton_version == Version("3.2.0"):
+    elif Version("3.2.0") <= triton_version < Version("3.3.0"):
         arg_names = fn.arg_names
         _constants = {arg_names[i]: v for i, v in constants.items()}
         _signature_without_spec = {
@@ -227,20 +336,101 @@ def _compile_a_kernel(
     # STEP2: compile options for the backend
     opts = {"num_warps": num_warps, "num_stages": num_stages}
 
-    with torch.cuda.device(device_id):
-        # STEP3: ast source, target, compile options
-        target: triton.backends.compiler.GPUTarget = (
-            triton.runtime.driver.active.get_current_target()
-        )
-        ccinfo: triton.compiler.CompiledKernel = triton.compile(
-            src, target, options=opts
-        )
+    # STEP3: ast source, target, compile options (backend-specific)
+    backend = get_backend()
+    if backend in ["NPU", "MUSA", "MTGPU"]:
+        # NPU/MUSA/MTGPU: no device context manager
+        # Note: MTGPU is the Triton backend name for MUSA (Moore Threads GPU)
+        target = triton.runtime.driver.active.get_current_target()
+        ccinfo = triton.compile(src, target=target, options=opts)
+    else:
+        # CUDA / IX: use CUDA device context
+        with torch.cuda.device(device_id):
+            target = triton.runtime.driver.active.get_current_target()
+            ccinfo = triton.compile(src, target=target, options=opts)
 
     # kernel's hash may not equals the dir in cache
     from triton.runtime.cache import get_cache_manager
 
     cache_manager = get_cache_manager(ccinfo.hash)
-    return cache_manager.cache_dir
+    cache_dir = cache_manager.cache_dir
+
+    # For NPU backend, generate and write arg_layout to metadata JSON
+    if backend == "NPU":
+        # Generate arg_layout from the original signature
+        arg_layout = generate_arg_layout(signature, constexpr_indices)
+
+        # Find the kernel name (usually the function name)
+        kernel_name = fn.__name__
+
+        # Look for existing metadata JSON file
+        metadata_path = Path(cache_dir) / f"{kernel_name}.json"
+
+        if metadata_path.exists():
+            # Read existing metadata
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+        else:
+            # Create new metadata
+            metadata = {}
+
+        # Add arg_layout to metadata
+        metadata["arg_layout"] = arg_layout
+
+        # Write back
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        print(
+            f"[NPU] Generated arg_layout with {len(arg_layout)} runtime args: {arg_layout}"
+        )
+
+    # For MTGPU backend: Use official mtgpu.translate_llvmir_to_mubin() for compilation
+    elif backend == "MTGPU":
+        import shutil
+
+        from triton._C.libtriton import mtgpu
+
+        kernel_name = fn.__name__
+        llir_path = Path(cache_dir) / f"{kernel_name}.llir"
+
+        if llir_path.exists():
+            try:
+                with open(llir_path, "r") as f:
+                    llir_content = f.read()
+
+                # Compilation options (from official Triton MUSA backend compiler.py)
+                opt_option = "-mtgpu-enable-const-calc=1 -mtgpu-tiny-offset-hint=1 -mtgpu-alloc-shared-memory-from-zero=1"
+
+                # Get capability from target (default to 22 for S5000)
+                capability = getattr(target, "arch", 22)
+                if isinstance(capability, tuple):
+                    capability = capability[0] * 10 + capability[1]
+
+                # Use official compilation function (same as Triton MUSA backend)
+                asm_str, mubin_tmp_path = mtgpu.translate_llvmir_to_mubin(
+                    llir_content, opt_option, capability, 0
+                )
+
+                # Copy mubin to cache directory
+                mubin_path = Path(cache_dir) / f"{kernel_name}.mubin"
+                shutil.copy2(mubin_tmp_path, mubin_path)
+
+                # Optionally save ASM for debugging
+                if os.environ.get("MUSA_ASM_ENABLE_DUMP", "0") == "1":
+                    asm_path = Path(cache_dir) / f"{kernel_name}.asm"
+                    with open(asm_path, "w") as f:
+                        f.write(asm_str)
+
+            except Exception as e:
+                import sys
+                import traceback
+
+                sys.stderr.write(
+                    f"[MTGPU] Compilation failed: {e}\n{traceback.format_exc()}\n"
+                )
+
+    return cache_dir
 
 
 def compile_a_kernel(

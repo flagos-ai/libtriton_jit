@@ -1,11 +1,9 @@
-
-
-#include <iostream>
+#pragma once
 
 #include "torch/torch.h"
 
 namespace my_ops {
 
-at::Tensor add_tensor(const at::Tensor &a_, const at::Tensor &b_);
-at::Tensor add_tensor_manual_arg_handle(const at::Tensor &a_, const at::Tensor &b_);
+at::Tensor add_tensor(const at::Tensor& a_, const at::Tensor& b_);
+
 }  // namespace my_ops

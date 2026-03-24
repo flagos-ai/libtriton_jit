@@ -1,31 +1,32 @@
-
 #include <gtest/gtest.h>
 #include "add_op.h"
-#include "c10/cuda/CUDAFunctions.h"
 #include "torch/torch.h"
+#include "triton_jit/backend_config.h"
 
-int main() {
-  at::Tensor a = at::rand({128 * 1024}, at::kCUDA);
-  at::Tensor b = at::rand({128 * 1024}, at::kCUDA);
-  // warm up
-  at::Tensor result1 = at::add(a, b);
-  at::Tensor result2 = my_ops::add_tensor(a, b);
-  at::Tensor result3 = my_ops::add_tensor_manual_arg_handle(a, b);
-  EXPECT_TRUE(torch::allclose(result1, result2));
-  EXPECT_TRUE(torch::allclose(result1, result3));
+static at::Device test_device() {
+#if defined(BACKEND_NPU)
+  return at::Device("npu:0");
+#elif defined(BACKEND_MUSA)
+  return at::Device("musa:0");
+#else
+  return at::kCUDA;
+#endif
+}
 
-  c10::cuda::device_synchronize();
-  for (int i = 0; i < 10; ++i) {
-    auto tmp = at::add(a, b);
-  }
-  c10::cuda::device_synchronize();
-  for (int i = 0; i < 10; ++i) {
-    auto tmp = my_ops::add_tensor(a, b);
-  }
-  c10::cuda::device_synchronize();
-  for (int i = 0; i < 10; ++i) {
-    auto tmp = my_ops::add_tensor_manual_arg_handle(a, b);
-  }
-  c10::cuda::device_synchronize();
-  return 0;
+TEST(add_test, basic) {
+  at::Tensor a = at::rand({128 * 1024}, test_device());
+  at::Tensor b = at::rand({128 * 1024}, test_device());
+
+  at::Tensor result = my_ops::add_tensor(a, b);
+  at::Tensor expected = at::add(a, b);
+  EXPECT_TRUE(torch::allclose(result, expected));
+}
+
+TEST(add_test, broadcast) {
+  at::Tensor a = at::rand({256, 128}, test_device());
+  at::Tensor b = at::rand({128}, test_device());
+
+  at::Tensor result = my_ops::add_tensor(a, b);
+  at::Tensor expected = at::add(a, b);
+  EXPECT_TRUE(torch::allclose(result, expected));
 }
