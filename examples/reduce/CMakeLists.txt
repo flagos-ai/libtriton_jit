@@ -19,5 +19,5 @@ add_dependencies(sum_op copy_triton_reduce_src)
 
 add_executable(test_sum test_sum.cpp)
 target_link_libraries(test_sum
-    PRIVATE sum_op Torch::Torch GTest::gtest GTest::gtest_main)
+    PRIVATE sum_op TritonJIT::triton_jit Torch::Torch GTest::gtest GTest::gtest_main)
 add_dependencies(test_sum copy_triton_reduce_src)

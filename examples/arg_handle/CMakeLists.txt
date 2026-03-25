@@ -19,4 +19,4 @@ add_dependencies(axpy_op copy_triton_axpy_src)
 
 add_executable(test_axpy test_axpy.cpp)
 target_link_libraries(test_axpy
-    PRIVATE axpy_op Torch::Torch GTest::gtest GTest::gtest_main)
+    PRIVATE axpy_op TritonJIT::triton_jit Torch::Torch GTest::gtest GTest::gtest_main)

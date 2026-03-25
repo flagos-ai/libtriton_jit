@@ -19,4 +19,4 @@ add_dependencies(add_op copy_triton_pointwise_src)
 
 add_executable(test_add test_add.cpp)
 target_link_libraries(test_add
-    PRIVATE add_op Torch::Torch GTest::gtest GTest::gtest_main)
+    PRIVATE add_op TritonJIT::triton_jit Torch::Torch GTest::gtest GTest::gtest_main)
