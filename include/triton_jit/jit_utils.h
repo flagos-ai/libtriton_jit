@@ -13,6 +13,8 @@
 #include "acl/acl.h"
 #elif defined(BACKEND_MUSA)
 #include <musa.h>
+#elif defined(BACKEND_MLU)
+#include <cn_api.h>
 #else
 #include "cuda.h"
 #endif
@@ -143,6 +145,23 @@ inline void __checkMusaErrors(MUresult code, const char* file, const int line) {
             file,
             line,
             error_string);
+    throw std::runtime_error(error_string);
+  }
+}
+
+#elif defined(BACKEND_MLU)
+#define checkMluErrors(err) __checkMluErrors(err, __FILE__, __LINE__)
+
+// Error handling function using exceptions instead of exit()
+inline void __checkMluErrors(CNresult code, const char* file, const int line) {
+  if (code != CN_SUCCESS){
+    const char* error_string;
+    cnGetErrorString(code, &error_string);
+    fprintf(stderr, "MLU Driver API error = %04d from file <%s>, line %i. Detail: <%s>\n",
+        code,
+        file,
+        line,
+        error_string);
     throw std::runtime_error(error_string);
   }
 }

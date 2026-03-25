@@ -337,6 +337,13 @@ def _compile_a_kernel(
         # Note: MTGPU is the Triton backend name for MUSA (Moore Threads GPU)
         target = triton.runtime.driver.active.get_current_target()
         ccinfo = triton.compile(src, target=target, options=opts)
+    elif backend in ["MLU"]:
+        target = triton.runtime.driver.active.get_current_target()
+        opts['is_linear_hint'] = True
+        opts['restrict_ptr_hint'] = True
+        mlu_backend = triton.compiler.make_backend(target)
+        opts = mlu_backend.parse_options(opts)
+        ccinfo = triton.compile(src, target=target, options=opts.__dict__)
     else:
         # CUDA / IX: use CUDA device context
         with torch.cuda.device(device_id):

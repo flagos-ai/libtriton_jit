@@ -4,6 +4,7 @@
 
 #include "fill_op.h"
 #include "operators/common/backend_ops.h"
+#include "operators/common/kernel_config.h"
 #include "operators/common/op_registration.h"
 #include "torch/torch.h"
 #include "triton_jit/triton_jit_function.h"
@@ -19,16 +20,14 @@ at::Tensor& fill_(at::Tensor& tensor, const at::Scalar& value) {
 
   const TritonJITFunction& f = TritonJITFunction::get_instance(std::string("fill_.py"), "fill_kernel");
 
-  constexpr int64_t BLOCK_SIZE = 1024;
-  constexpr int num_warps = 4;
-  constexpr int num_stages = 1;
+  constexpr auto cfg = triton_jit::ops::default_pointwise_config();
 
-  int64_t num_blocks = (n_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  int64_t num_blocks = (n_elements + cfg.tile_size - 1) / cfg.tile_size;
 
   c10::DeviceGuard guard(tensor.device());
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(tensor);
 
-  f(stream, num_blocks, 1, 1, num_warps, num_stages, tensor, fill_value, n_elements, BLOCK_SIZE);
+  f(stream, num_blocks, 1, 1, cfg.num_warps, cfg.num_stages, tensor, fill_value, n_elements, cfg.tile_size);
 
   return tensor;
 }
