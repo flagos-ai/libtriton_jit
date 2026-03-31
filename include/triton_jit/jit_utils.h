@@ -44,6 +44,8 @@ constexpr const char* to_triton_typename(c10::ScalarType t) {
       return "u16";
     case c10::ScalarType::Char:
       return "i8";
+    case c10::ScalarType::Float8_e4m3fn:
+      return "fp8e4nv";
     case c10::ScalarType::Byte:
       return "u8";
     case c10::ScalarType::Bool:
