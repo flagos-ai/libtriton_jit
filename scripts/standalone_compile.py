@@ -389,7 +389,10 @@ def _compile_a_kernel(
     elif backend == "MTGPU":
         import shutil
 
-        from triton._C.libtriton import mtgpu
+        try:
+            from triton._C.libtriton import mtgpu
+        except ImportError:
+            from triton._C.libtriton import mthreads as mtgpu
 
         kernel_name = fn.__name__
         llir_path = Path(cache_dir) / f"{kernel_name}.llir"
