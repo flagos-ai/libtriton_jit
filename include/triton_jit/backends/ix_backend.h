@@ -93,7 +93,11 @@ struct IxBackend {
 
       CUdevice device;
       checkCudaErrors(cuDeviceGet(&device, 0));
-      checkCudaErrors(cuCtxCreate(&ctx, 0, device));
+      #if CUDA_VERSION >= 13000
+        checkCudaErrors(cuCtxCreate(&ctx, nullptr, 0, device));
+      #else
+        checkCudaErrors(cuCtxCreate(&ctx, 0, device));
+      #endif
     }
   }
 
