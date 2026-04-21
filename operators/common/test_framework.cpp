@@ -98,6 +98,17 @@ namespace test {
     device_ = at::Device(at::DeviceType::CUDA, device_id_);
     std::cout << "IX device " << device_id_ << " initialized" << std::endl;
 
+#elif defined(BACKEND_HCU)
+    // Initialize HCU (uses HIP API)
+    hipError_t err = hipSetDevice(device_id_);
+    if (err != hipSuccess) {
+      std::cerr << "Failed to set HCU device: " << hipGetErrorString(err) << std::endl;
+      return -1;
+    }
+
+    device_ = at::Device(at::DeviceType::CUDA, device_id_);
+    std::cout << "HCU device " << device_id_ << " initialized" << std::endl;
+
 #else  // CUDA
     // Initialize CUDA
     cudaError_t err = cudaSetDevice(device_id_);
@@ -123,6 +134,8 @@ namespace test {
     musaDeviceSynchronize();
 #elif defined(BACKEND_MLU)
     cnrtSyncDevice();
+#elif defined(BACKEND_HCU)
+    hipDeviceSynchronize();
 #else  // CUDA or IX
     cudaDeviceSynchronize();
 #endif
@@ -137,6 +150,8 @@ namespace test {
     return "MLU";
 #elif defined(BACKEND_IX)
     return "IX";
+#elif defined(BACKEND_HCU)
+    return "HCU";
 #else
     return "CUDA";
 #endif
@@ -154,6 +169,8 @@ namespace test {
 #elif defined(BACKEND_MLU)
     interpreter_.reset();
     cnrtDeviceReset();
+#elif defined(BACKEND_HCU)
+    hipDeviceReset();
 #else  // CUDA or IX
     cudaDeviceReset();
 #endif

@@ -21,6 +21,12 @@ struct MluKernelMetadata {
   bool promote_shared = false;
 };
 
+// HCU metadata for HCU backend
+struct HcuKernelMetadata {
+  unsigned int shared = 0;
+  std::string arch;         // String arch for HCU (e.g., "gfx938")
+};
+
 // Load GPU kernel metadata from {dir}/{kernel_name}.json
 // Returns default values if file not found.
 GpuKernelMeta load_gpu_metadata(const std::string& dir, const std::string& kernel_name);
@@ -32,6 +38,10 @@ NpuKernelMetadata load_npu_metadata(const std::string& dir, const std::string& k
 // Load MLU kernel metadata from {dir}/{kernel_name}.json
 // Returns default values if file not found.
 MluKernelMetadata load_mlu_metadata(const std::string& dir, const std::string& kernel_name);
+
+// Load HCU kernel metadata from {dir}/{kernel_name}.json
+// Returns default values if file not found.
+HcuKernelMetadata load_hcu_metadata(const std::string& dir, const std::string& kernel_name);
 
 // Load only the shared memory field from metadata JSON.
 // Returns 0 if file not found or field missing.
