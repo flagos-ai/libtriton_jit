@@ -35,6 +35,13 @@ static void ensure_initialized() {
       } catch (const py::error_already_set& e) {
         std::cerr << "Warning: Failed to import torch_musa: " << e.what() << std::endl;
       }
+    } else if (backend_name == "houyi") {
+      try {
+        // Import torch_xmlir to register Kunlunxin as PrivateUse1 backend
+        py::module_::import("torch_xmlir");
+      } catch (const py::error_already_set& e) {
+        std::cerr << "Warning: Failed to import torch_xmlir: " << e.what() << std::endl;
+      }
     }
   });
 }
@@ -129,4 +136,9 @@ template class triton_jit::TritonJITFunctionImpl<triton_jit::IxBackend>;
 #ifdef BACKEND_MUSA
 #include "triton_jit/backends/musa_backend.h"
 template class triton_jit::TritonJITFunctionImpl<triton_jit::MusaBackend>;
+#endif
+
+#ifdef BACKEND_KUNLUNXIN
+#include "triton_jit/backends/kunlunxin_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::KunlunxinBackend>;
 #endif

@@ -14,6 +14,8 @@
 #include "acl/acl.h"
 #elif defined(BACKEND_MUSA)
 #include <musa.h>
+#elif defined(BACKEND_KUNLUNXIN)
+#include <xpu/runtime.h>
 #else
 #include "cuda.h"
 #endif
@@ -149,6 +151,20 @@ inline void __checkMusaErrors(MUresult code, const char* file, const int line) {
     throw std::runtime_error(error_string);
   }
 }
+#elif defined(BACKEND_KUNLUNXIN)
+// Kunlunxin XPU3 error checking
+inline void checkXpuErrors(int code, const char* file, const int line) {
+  if (code != 0) {
+    fprintf(stderr,
+            "XPU runtime error = %d (%s) from file <%s>, line %i\n",
+            code,
+            xpu_strerror(code),
+            file,
+            line);
+    throw std::runtime_error(xpu_strerror(code));
+  }
+}
+#define checkKunlunxinErrors(err) checkXpuErrors(err, __FILE__, __LINE__)
 #else
 void ensure_cuda_context();
 

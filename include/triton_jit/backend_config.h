@@ -6,6 +6,8 @@
 #include "triton_jit/backends/musa_backend.h"
 #elif defined(BACKEND_IX)
 #include "triton_jit/backends/ix_backend.h"
+#elif defined(BACKEND_KUNLUNXIN)
+#include "triton_jit/backends/kunlunxin_backend.h"
 #else
 #include "triton_jit/backends/cuda_backend.h"
 #endif
@@ -27,6 +29,10 @@ using DefaultBackend = CudaBackend;
 #elif defined(BACKEND_IX)
 /// Default backend for IX (Tianshu)
 using DefaultBackend = IxBackend;
+
+#elif defined(BACKEND_KUNLUNXIN)
+/// Default backend for Kunlunxin (Baidu XPU3)
+using DefaultBackend = KunlunxinBackend;
 
 #else
 // Default to CUDA if no backend specified
