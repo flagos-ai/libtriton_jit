@@ -23,11 +23,11 @@ cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 # ==============================================================================
 # Backend Selection (must be before project())
 # ==============================================================================
-set(BACKEND "CUDA" CACHE STRING "Target backend: CUDA, IX, MUSA, MACA, MLU, NPU, GCU, or HCU")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "IX" "MUSA" "MACA" "MLU" "NPU" "GCU" "HCU")
+set(BACKEND "CUDA" CACHE STRING "Target backend: CUDA, IX, MUSA, MACA, MLU, NPU, GCU, HCU, or KUNLUNXIN")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "IX" "MUSA" "MACA" "MLU" "NPU" "GCU" "HCU" "KUNLUNXIN")
 
-if(NOT BACKEND MATCHES "^(CUDA|IX|MUSA|MACA|MLU|NPU|GCU|HCU)$")
-    message(FATAL_ERROR "Invalid BACKEND: ${BACKEND}. Must be CUDA, IX, MUSA, MACA, MLU, NPU, GCU, or HCU")
+if(NOT BACKEND MATCHES "^(CUDA|IX|MUSA|MACA|MLU|NPU|GCU|HCU|KUNLUNXIN)$")
+    message(FATAL_ERROR "Invalid BACKEND: ${BACKEND}. Must be CUDA, IX, MUSA, MACA, MLU, NPU, GCU, HCU, or KUNLUNXIN")
 endif()
 message(STATUS "Building with backend: ${BACKEND}")
 
@@ -44,7 +44,7 @@ if(BACKEND STREQUAL "MACA")
     set(USE_MACA ON)
 endif()
 
-# Project definition (NPU, MUSA, MACA, MLU, GCU, and HCU don't need CUDA language)
+# Project definition (NPU, MUSA, MACA, MLU, GCU, HCU, and KUNLUNXIN don't need CUDA language)
 if(BACKEND STREQUAL "NPU")
     project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
 elseif(BACKEND STREQUAL "MUSA")
@@ -56,8 +56,10 @@ elseif(BACKEND STREQUAL "MLU")
 elseif(BACKEND STREQUAL "GCU")
     project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
 elseif(BACKEND STREQUAL "HCU")
+elseif(BACKEND STREQUAL "KUNLUNXIN")
     project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
 else()
+    # CUDA, IX use CUDA driver API
     project(TritonJIT LANGUAGES CUDA CXX VERSION 0.1.0)
 endif()
 
@@ -82,12 +84,16 @@ elseif(BACKEND STREQUAL "GCU")
     add_compile_definitions(BACKEND_GCU)
 elseif(BACKEND STREQUAL "HCU")
     add_compile_definitions(BACKEND_HCU)
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    add_compile_definitions(BACKEND_KUNLUNXIN)
 endif()
 
 # String macro for Python runtime
-# Map MUSA to mtgpu for Triton backend name
+# Map MUSA to mtgpu, KUNLUNXIN to houyi for Triton backend name
 if(BACKEND STREQUAL "MUSA")
     set(TRITON_BACKEND_NAME "mtgpu")
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    set(TRITON_BACKEND_NAME "houyi")
 else()
     set(TRITON_BACKEND_NAME "${BACKEND}")
 endif()
@@ -192,6 +198,8 @@ endif()
 # ==============================================================================
 if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
     include(BackendCUDA)
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    include(BackendKunlunxin)
 elseif(BACKEND STREQUAL "NPU")
     include(BackendNPU)
 elseif(BACKEND STREQUAL "MUSA")
