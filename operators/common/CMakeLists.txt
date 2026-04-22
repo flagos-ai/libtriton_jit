@@ -29,6 +29,8 @@ elseif(BACKEND STREQUAL "MUSA")
 elseif(BACKEND STREQUAL "MLU")
     target_link_mlu_libraries(triton_test_framework)
     target_link_libraries(triton_test_framework PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "HCU")
+    target_link_libraries(triton_test_framework PRIVATE hip::host)
 elseif(BACKEND STREQUAL "IX")
     target_link_libraries(triton_test_framework PRIVATE CUDA::cuda_driver CUDA::cudart)
 else()  # CUDA
