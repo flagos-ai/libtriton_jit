@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <dlfcn.h>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -41,6 +42,14 @@ static void ensure_initialized() {
         py::module_::import("torch_xmlir");
       } catch (const py::error_already_set& e) {
         std::cerr << "Warning: Failed to import torch_xmlir: " << e.what() << std::endl;
+      }
+      // torch_xmlir overrides aten PrivateUse1 kernels; re-register the native
+      // XRE3 implementations (exported from xpu_registration.cpp) so they win.
+      {
+        using ReregFn = void (*)();
+        ReregFn fn = reinterpret_cast<ReregFn>(dlsym(RTLD_DEFAULT, "xpu_reregister_kernels"));
+        std::cerr << "[triton_jit] xpu_reregister_kernels via dlsym: " << (fn ? "found" : "NOT FOUND") << std::endl;
+        if (fn) fn();
       }
     }
   });
