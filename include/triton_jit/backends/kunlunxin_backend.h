@@ -368,6 +368,7 @@ struct KunlunxinBackend {
 
     auto* kern = new KunlunxinKernelDesc();
     kern->type = cached.metadata.is_sdnn ? KT_SDCDNN : KT_CLUSTER;
+
     kern->place = KP_CPU;
     kern->code_addr = reinterpret_cast<uint64_t>(cached.binary_data.data());
     kern->code_byte_size = static_cast<uint32_t>(cached.binary_data.size());
