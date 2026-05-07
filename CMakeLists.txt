@@ -3,20 +3,23 @@ cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 # ==============================================================================
 # Backend Selection (must be before project())
 # ==============================================================================
-set(BACKEND "CUDA" CACHE STRING "Target backend: CUDA, IX, MUSA, or NPU")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "IX" "MUSA" "NPU")
+set(BACKEND "CUDA" CACHE STRING "Target backend: CUDA, IX, MUSA, NPU, KUNLUNXIN")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "IX" "MUSA" "NPU" "KUNLUNXIN")
 
-if(NOT BACKEND MATCHES "^(CUDA|IX|MUSA|NPU)$")
-    message(FATAL_ERROR "Invalid BACKEND: ${BACKEND}. Must be CUDA, IX, MUSA, or NPU")
+if(NOT BACKEND MATCHES "^(CUDA|IX|MUSA|NPU|KUNLUNXIN)$")
+    message(FATAL_ERROR "Invalid BACKEND: ${BACKEND}. Must be CUDA, IX, MUSA, NPU, KUNLUNXIN")
 endif()
 message(STATUS "Building with backend: ${BACKEND}")
 
-# Project definition (NPU and MUSA don't need CUDA language)
+# Project definition (NPU, MUSA, and KUNLUNXIN don't need CUDA language)
 if(BACKEND STREQUAL "NPU")
     project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
 elseif(BACKEND STREQUAL "MUSA")
     project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    project(TritonJIT LANGUAGES CXX VERSION 0.1.0)
 else()
+    # CUDA, IX use CUDA driver API
     project(TritonJIT LANGUAGES CUDA CXX VERSION 0.1.0)
 endif()
 
@@ -33,12 +36,16 @@ elseif(BACKEND STREQUAL "NPU")
     add_compile_definitions(BACKEND_NPU)
 elseif(BACKEND STREQUAL "MUSA")
     add_compile_definitions(BACKEND_MUSA)
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    add_compile_definitions(BACKEND_KUNLUNXIN)
 endif()
 
 # String macro for Python runtime
-# Map MUSA to mtgpu for Triton backend name
+# Map MUSA to mtgpu, KUNLUNXIN to houyi for Triton backend name
 if(BACKEND STREQUAL "MUSA")
     set(TRITON_BACKEND_NAME "mtgpu")
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    set(TRITON_BACKEND_NAME "houyi")
 else()
     set(TRITON_BACKEND_NAME "${BACKEND}")
 endif()
@@ -143,6 +150,8 @@ endif()
 # ==============================================================================
 if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
     include(BackendCUDA)
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    include(BackendKunlunxin)
 elseif(BACKEND STREQUAL "NPU")
     include(BackendNPU)
 elseif(BACKEND STREQUAL "MUSA")

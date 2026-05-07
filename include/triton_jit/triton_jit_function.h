@@ -272,9 +272,9 @@ class TritonJITFunctionImpl {
     ArgHandle handler = {this->static_sig_, buffer, signature, 0};
     (handler.handle_arg(args), ...);
 
-#if !defined(BACKEND_NPU)
+#if !defined(BACKEND_NPU) && !defined(BACKEND_KUNLUNXIN)
     // global scratch: introduced in triton 3.3
-    // NPU backend does not use global scratch (handled differently via workspace)
+    // NPU/Kunlunxin backends do not use global scratch
     handler.append_global_scratch();
     handler.append_global_scratch();
 #endif

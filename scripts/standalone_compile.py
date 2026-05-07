@@ -254,7 +254,11 @@ def _compile_a_kernel(
     divisible_by_16 = tuple(i for i, h in hints.items() if h == 16)
     equal_to_1 = tuple(i for i, h in hints.items() if h == 1)
 
-    if triton_version.major == 3 and triton_version.minor == 1:
+    if triton_version.major == 3 and triton_version.minor == 0:
+        attrs = triton.compiler.AttrsDescriptor(
+            divisible_by_16=divisible_by_16, equal_to_1=equal_to_1
+        )
+    elif triton_version.major == 3 and triton_version.minor == 1:
         attrs = triton.compiler.AttrsDescriptor(
             divisible_by_16=divisible_by_16, equal_to_1=equal_to_1
         )
@@ -290,7 +294,14 @@ def _compile_a_kernel(
             constants[i] = None
             signature_without_spec[i] = "constexpr"
 
-    if Version("3.1.0") <= triton_version < Version("3.2.0"):
+    if Version("3.0.0") <= triton_version < Version("3.1.0"):
+        src = triton.compiler.ASTSource(
+            fn=fn,
+            constants=constants,
+            signature=signature_without_spec,
+            attrs=attrs,
+        )
+    elif Version("3.1.0") <= triton_version < Version("3.2.0"):
         src = triton.compiler.ASTSource(
             fn=fn,
             constants=constants,
@@ -338,7 +349,7 @@ def _compile_a_kernel(
 
     # STEP3: ast source, target, compile options (backend-specific)
     backend = get_backend()
-    if backend in ["NPU", "MUSA", "MTGPU"]:
+    if backend in ["NPU", "MUSA", "MTGPU", "HOUYI"]:
         # NPU/MUSA/MTGPU: no device context manager
         # Note: MTGPU is the Triton backend name for MUSA (Moore Threads GPU)
         target = triton.runtime.driver.active.get_current_target()

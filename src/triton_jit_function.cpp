@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <dlfcn.h>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -34,6 +35,21 @@ static void ensure_initialized() {
         py::module_::import("torch_musa");
       } catch (const py::error_already_set& e) {
         std::cerr << "Warning: Failed to import torch_musa: " << e.what() << std::endl;
+      }
+    } else if (backend_name == "houyi") {
+      try {
+        // Import torch_xmlir to register Kunlunxin as PrivateUse1 backend
+        py::module_::import("torch_xmlir");
+      } catch (const py::error_already_set& e) {
+        std::cerr << "Warning: Failed to import torch_xmlir: " << e.what() << std::endl;
+      }
+      // torch_xmlir overrides aten PrivateUse1 kernels; re-register the native
+      // XRE3 implementations (exported from xpu_registration.cpp) so they win.
+      {
+        using ReregFn = void (*)();
+        ReregFn fn = reinterpret_cast<ReregFn>(dlsym(RTLD_DEFAULT, "xpu_reregister_kernels"));
+        std::cerr << "[triton_jit] xpu_reregister_kernels via dlsym: " << (fn ? "found" : "NOT FOUND") << std::endl;
+        if (fn) fn();
       }
     }
   });
@@ -129,4 +145,9 @@ template class triton_jit::TritonJITFunctionImpl<triton_jit::IxBackend>;
 #ifdef BACKEND_MUSA
 #include "triton_jit/backends/musa_backend.h"
 template class triton_jit::TritonJITFunctionImpl<triton_jit::MusaBackend>;
+#endif
+
+#ifdef BACKEND_KUNLUNXIN
+#include "triton_jit/backends/kunlunxin_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::KunlunxinBackend>;
 #endif

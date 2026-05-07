@@ -20,7 +20,12 @@ elseif(BACKEND STREQUAL "MUSA")
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch MUSA::musa_runtime fmt::fmt-header-only
       PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch Kunlunxin::runtime fmt::fmt-header-only
+      PRIVATE pybind11::embed)
 else()
+    # CUDA and IX use CUDA driver API
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch CUDA::cuda_driver fmt::fmt-header-only
       PRIVATE pybind11::embed)
@@ -29,8 +34,15 @@ endif()
 # Set backend compile definition based on BACKEND variable
 target_compile_definitions(triton_jit PUBLIC BACKEND_${BACKEND})
 
-# nlohmann_json is only used in kernel_metadata.cpp, keep it PRIVATE
+# nlohmann_json is header-only. The public header triton_jit/backends/kunlunxin_backend.h
+# includes <nlohmann/json.hpp>, so we must propagate its include dirs to consumers.
+# Don't add to linked libraries (would break install(EXPORT) since json isn't in the
+# export set); just forward the INTERFACE include dirs as a PUBLIC include dir.
 target_link_libraries(triton_jit PRIVATE nlohmann_json::nlohmann_json)
+get_target_property(_NLOHMANN_JSON_INCS nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+if(_NLOHMANN_JSON_INCS)
+    target_include_directories(triton_jit PUBLIC ${_NLOHMANN_JSON_INCS})
+endif()
 
 # --------------------------- alias targets ---------------------------
 # This is the target used in FetchContent, since FetchContent use add_subdirectory (a sub project build)
