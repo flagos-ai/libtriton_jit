@@ -37,32 +37,10 @@ at::Tensor rwkv_ka_fusion(const at::Tensor& k, const at::Tensor& a) {
   c10::DeviceGuard guard(k.device());
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(k);
 
-  // GCU: grid.y limit is 255, swap grid dims so seq_len uses grid.x (limit 65535)
-  // Kernel uses program_id(0) for batch, program_id(1) for seq
-  // We launch with swapped grid and use a swapped-axis kernel variant
-  unsigned int grid_x = static_cast<unsigned int>(batch_size);
-  unsigned int grid_y = static_cast<unsigned int>(seq_len);
-#if defined(BACKEND_GCU)
-  if (grid_y > 255) {
-    grid_x = static_cast<unsigned int>(seq_len);
-    grid_y = static_cast<unsigned int>(batch_size);
-    const TritonJITFunction& f_swap =
-        TritonJITFunction::get_instance(std::string("rwkv_ka_fusion.py"), "rwkv_ka_fusion_kernel_swapped");
-    f_swap(stream,
-      grid_x, grid_y, 1,
-      num_warps, num_stages,
-      k_contig, a_contig, output,
-      batch_size, seq_len, hidden_dim,
-      k_contig.stride(0), k_contig.stride(1),
-      a_contig.stride(0), a_contig.stride(1),
-      output.stride(0), output.stride(1),
-      BLOCK_SIZE);
-    return output;
-  }
-#endif
-
   f(stream,
-    grid_x, grid_y, 1,
+    batch_size,
+    seq_len,
+    1,
     num_warps,
     num_stages,
     k_contig,

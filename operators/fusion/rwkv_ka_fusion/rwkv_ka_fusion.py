@@ -56,47 +56,6 @@ def rwkv_ka_fusion_kernel(
         tl.store(out_base + idx, output, mask=mask)
 
 
-@triton.jit
-def rwkv_ka_fusion_kernel_swapped(
-    k_ptr,
-    a_ptr,
-    output_ptr,
-    batch_size,
-    seq_len,
-    hidden_dim,
-    k_stride_batch,
-    k_stride_seq,
-    a_stride_batch,
-    a_stride_seq,
-    out_stride_batch,
-    out_stride_seq,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Swapped grid version: program_id(0)=seq, program_id(1)=batch for GCU grid.y limit."""
-    seq_idx = tl.program_id(0)
-    batch_idx = tl.program_id(1)
-
-    if batch_idx >= batch_size or seq_idx >= seq_len:
-        return
-
-    offsets = tl.arange(0, BLOCK_SIZE)
-
-    k_base = k_ptr + batch_idx * k_stride_batch + seq_idx * k_stride_seq
-    a_base = a_ptr + batch_idx * a_stride_batch + seq_idx * a_stride_seq
-
-    for off in range(0, hidden_dim, BLOCK_SIZE):
-        idx = off + offsets
-        mask = idx < hidden_dim
-
-        k = tl.load(k_base + idx, mask=mask, other=0.0)
-        a = tl.load(a_base + idx, mask=mask, other=0.0)
-
-        output = k * a
-
-        out_base = output_ptr + batch_idx * out_stride_batch + seq_idx * out_stride_seq
-        tl.store(out_base + idx, output, mask=mask)
-
-
 def rwkv_ka_fusion(k: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
     """RWKV key-attention fusion (NPU-compatible).
 

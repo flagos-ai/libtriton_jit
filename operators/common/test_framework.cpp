@@ -87,26 +87,6 @@ namespace test {
     device_ = at::Device(at::DeviceType::PrivateUse1, device_id_);
     std::cout << "MLU device" << device_id_ << " initialized" << std::endl;
 
-#elif defined(BACKEND_GCU)
-    // Initialize GCU
-    topsError_t err = topsSetDevice(device_id_);
-    if (err != topsSuccess) {
-      std::cerr << "Failed to set GCU device: " << topsGetErrorString(err) << std::endl;
-      return -1;
-    }
-
-    interpreter_ = std::make_unique<py::scoped_interpreter>();
-
-    try {
-      py::module_::import("torch_gcu");
-    } catch (const py::error_already_set& e) {
-      std::cerr << "Failed to import torch_gcu: " << e.what() << std::endl;
-      return -1;
-    }
-
-    device_ = at::Device(at::DeviceType::PrivateUse1, device_id_);
-    std::cout << "GCU device " << device_id_ << " initialized" << std::endl;
-
 #elif defined(BACKEND_IX)
     // Initialize IX (uses CUDA API)
     cudaError_t err = cudaSetDevice(device_id_);
@@ -143,8 +123,6 @@ namespace test {
     musaDeviceSynchronize();
 #elif defined(BACKEND_MLU)
     cnrtSyncDevice();
-#elif defined(BACKEND_GCU)
-    topsDeviceSynchronize();
 #else  // CUDA or IX
     cudaDeviceSynchronize();
 #endif
@@ -157,8 +135,6 @@ namespace test {
     return "MUSA";
 #elif defined(BACKEND_MLU)
     return "MLU";
-#elif defined(BACKEND_GCU)
-    return "GCU";
 #elif defined(BACKEND_IX)
     return "IX";
 #else
@@ -178,9 +154,6 @@ namespace test {
 #elif defined(BACKEND_MLU)
     interpreter_.reset();
     cnrtDeviceReset();
-#elif defined(BACKEND_GCU)
-    interpreter_.reset();
-    topsDeviceReset();
 #else  // CUDA or IX
     cudaDeviceReset();
 #endif

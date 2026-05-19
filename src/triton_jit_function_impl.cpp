@@ -30,16 +30,10 @@ static void ensure_initialized() {
     std::string backend_name(BACKEND_NAME);
     if (backend_name == "mtgpu") {
       try {
+        // Import torch_musa to register MUSA as PrivateUse1 backend
         py::module_::import("torch_musa");
       } catch (const py::error_already_set& e) {
         std::cerr << "Warning: Failed to import torch_musa: " << e.what() << std::endl;
-      }
-    }
-    if (backend_name == "GCU") {
-      try {
-        py::module_::import("torch_gcu");
-      } catch (const py::error_already_set& e) {
-        std::cerr << "Warning: Failed to import torch_gcu: " << e.what() << std::endl;
       }
     }
   });
@@ -140,9 +134,4 @@ template class triton_jit::TritonJITFunctionImpl<triton_jit::MusaBackend>;
 #ifdef BACKEND_MLU
 #include "triton_jit/backends/mlu_backend.h"
 template class triton_jit::TritonJITFunctionImpl<triton_jit::MluBackend>;
-#endif
-
-#ifdef BACKEND_GCU
-#include "triton_jit/backends/gcu_backend.h"
-template class triton_jit::TritonJITFunctionImpl<triton_jit::GcuBackend>;
 #endif

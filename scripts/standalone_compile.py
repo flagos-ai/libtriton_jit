@@ -5,9 +5,9 @@ from argparse import ArgumentParser
 from pathlib import Path
 from typing import List, Tuple, Union
 
-# NPU, MTGPU, and GCU require this before importing triton
+# NPU and MTGPU require this before importing triton
 backend_env = os.environ.get("TRITON_JIT_BACKEND", "").upper()
-if backend_env in ["NPU", "MTGPU", "GCU"]:
+if backend_env in ["NPU", "MTGPU"]:
     os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 
 import torch
@@ -343,19 +343,6 @@ def _compile_a_kernel(
         opts['restrict_ptr_hint'] = True
         mlu_backend = triton.compiler.make_backend(target)
         opts = mlu_backend.parse_options(opts)
-        ccinfo = triton.compile(src, target=target, options=opts.__dict__)
-    elif backend in ["GCU"]:
-        import triton_gcu.triton
-        from triton_gcu.triton.driver import _GCUDriver
-        from triton_gcu.triton.compiler import _GCUBackend
-        gcu_backends = importlib.import_module('triton.backends')
-        gcu_backends.backends['gcu'] = type('GcuBackendEntry', (), {
-            'compiler': _GCUBackend, 'driver': _GCUDriver
-        })
-        driver = _GCUDriver()
-        target = driver.get_current_target()
-        gcu_backend_inst = triton.compiler.make_backend(target)
-        opts = gcu_backend_inst.parse_options(opts)
         ccinfo = triton.compile(src, target=target, options=opts.__dict__)
     else:
         # CUDA / IX: use CUDA device context
