@@ -58,8 +58,6 @@ struct CudaBackend {
                             unsigned block_z,
                             void** args,
                             const LaunchOptions& opts) {
-    LOG(INFO) << "cuLaunchKernel";
-
     CUresult result = cuLaunchKernel(kernel,
                                      grid_x,
                                      grid_y,

@@ -306,16 +306,39 @@ class TritonJITFunctionImpl {
                             unsigned int grid_z,
                             unsigned int num_warps,
                             unsigned int num_stages,
-                            std::string full_signature,
+                            const std::string& full_signature,
                             void** args,
                             size_t num_args = 0) const {
+    // Cache kernel pointer per-signature to amortise get_kernel() lookup.
+    // launch_with_raw_args is the hot path; avoid fmt::format + map lookup.
+    using KernelPtr = const TritonKernelImpl<Backend>*;
+    thread_local static std::unordered_map<const TritonJITFunctionImpl*, std::pair<std::string, KernelPtr>> tl_cache;
+    auto& entry = tl_cache[this];
+    KernelPtr cached_kernel = nullptr;
+    if (entry.first == full_signature) {
+        cached_kernel = entry.second;
+    }
+    if (cached_kernel == nullptr) {
+        Backend::ensure_context();
+        int device_index = Backend::get_device_index();
+        const TritonKernelImpl<Backend>& kernel =
+            this->get_kernel(full_signature, num_warps, num_stages, device_index);
+        cached_kernel = &kernel;
+        entry.first = full_signature;
+        entry.second = cached_kernel;
+    }
     Backend::ensure_context();
-    int device_index = Backend::get_device_index();
+    cached_kernel->launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream, args, full_signature, num_args);
+  }
 
-    const TritonKernelImpl<Backend>& kernel =
-        this->get_kernel(full_signature, num_warps, num_stages, device_index);
-
-    kernel.launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream, args, full_signature, num_args);
+  /// Pre-compile the kernel without launching.
+  /// Useful during plan creation to ensure first exec does not trigger Python compilation.
+  void compile(std::string full_signature,
+               unsigned int num_warps,
+               unsigned int num_stages,
+               int device_index) const {
+    Backend::ensure_context();
+    this->get_kernel(full_signature, num_warps, num_stages, device_index);
   }
 
  private:
