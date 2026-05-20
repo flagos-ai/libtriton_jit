@@ -309,26 +309,33 @@ class TritonJITFunctionImpl {
                             const std::string& full_signature,
                             void** args,
                             size_t num_args = 0) const {
-    // Cache kernel pointer per-signature to amortise get_kernel() lookup.
+    // Cache kernel pointer per-signature/device to amortise get_kernel() lookup.
     // launch_with_raw_args is the hot path; avoid fmt::format + map lookup.
     using KernelPtr = const TritonKernelImpl<Backend>*;
-    thread_local static std::unordered_map<const TritonJITFunctionImpl*, std::pair<std::string, KernelPtr>> tl_cache;
+    struct CacheEntry {
+      std::string full_signature;
+      int device_index = -1;
+      KernelPtr kernel = nullptr;
+    };
+    thread_local static std::unordered_map<const TritonJITFunctionImpl*, CacheEntry> tl_cache;
     auto& entry = tl_cache[this];
+    Backend::ensure_context();
+    int device_index = Backend::get_device_index();
     KernelPtr cached_kernel = nullptr;
-    if (entry.first == full_signature) {
-        cached_kernel = entry.second;
+    if (entry.kernel != nullptr && entry.device_index == device_index &&
+        entry.full_signature == full_signature) {
+      cached_kernel = entry.kernel;
     }
     if (cached_kernel == nullptr) {
-        Backend::ensure_context();
-        int device_index = Backend::get_device_index();
-        const TritonKernelImpl<Backend>& kernel =
-            this->get_kernel(full_signature, num_warps, num_stages, device_index);
-        cached_kernel = &kernel;
-        entry.first = full_signature;
-        entry.second = cached_kernel;
+      const TritonKernelImpl<Backend>& kernel =
+          this->get_kernel(full_signature, num_warps, num_stages, device_index);
+      cached_kernel = &kernel;
+      entry.full_signature = full_signature;
+      entry.device_index = device_index;
+      entry.kernel = cached_kernel;
     }
-    Backend::ensure_context();
-    cached_kernel->launch_with_signature(grid_x, grid_y, grid_z, num_warps, stream, args, full_signature, num_args);
+    cached_kernel->launch_with_signature(
+        grid_x, grid_y, grid_z, num_warps, stream, args, full_signature, num_args);
   }
 
   /// Pre-compile the kernel without launching.
