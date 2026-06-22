@@ -21,8 +21,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - base_image: "nvidia/cuda:12.6.0-devel-ubuntu24.04"
-            label: "ubuntu2404-cuda1260"
+          # Match the FlagOS NVIDIA build env (flaggems-nvidia-12.8
+          # container): ubuntu22.04 + cuda12.8 + python3.12. A 22.04
+          # binary also runs on 24.04 (glibc backward-compat); the
+          # reverse does not hold.
+          - base_image: "nvidia/cuda:12.8.0-devel-ubuntu22.04"
+            label: "ubuntu2204-cuda1280"
 
     steps:
       - name: Checkout repository
