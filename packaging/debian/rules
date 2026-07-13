@@ -3,8 +3,11 @@
 export DH_VERBOSE = 1
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-# Use all available CPU cores for building
-export DEB_BUILD_OPTIONS = parallel=$(shell nproc)
+# Build parallelism: default to all cores, but allow the environment
+# to cap it (torch-heavy C++ at full parallelism OOMs constrained
+# runners — the build container passes parallel=4).
+DEB_BUILD_OPTIONS ?= parallel=$(shell nproc)
+export DEB_BUILD_OPTIONS
 
 %:
 	dh $@
@@ -15,7 +18,7 @@ override_dh_auto_configure:
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DFETCHCONTENT_FULLY_DISCONNECTED=OFF \
 		-DFETCHCONTENT_QUIET=OFF \
-		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
+		-DTRITON_JIT_USE_EXTERNAL_JSON=OFF \
 		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
 		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
 		-DTRITON_JIT_BUILD_EXAMPLES=OFF \

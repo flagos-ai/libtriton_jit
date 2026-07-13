@@ -13,14 +13,14 @@ This directory contains packaging configurations for building Debian (.deb) and 
 
 ```bash
 cd packaging/debian/build-helpers
-./build-libtriton-jit.sh --base-image nvidia/cuda:12.4.0-devel-ubuntu22.04 --output-dir ./output
+./build-libtriton-jit.sh --base-image nvidia/cuda:12.8.0-devel-ubuntu22.04 --output-dir ./output
 ```
 
 ### Manual build
 
 ```bash
 cd packaging/debian
-docker build --build-arg BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04 -f Dockerfile.deb -t libtriton-jit-builder ../../
+docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04 -f Dockerfile.deb -t libtriton-jit-builder ../../
 ```
 
 ## Building RPM Packages
@@ -29,32 +29,35 @@ docker build --build-arg BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04 -f Dock
 
 ```bash
 cd packaging/rpm
-./build-rpm.sh --base-image nvidia/cuda:12.4.0-devel-rockylinux8 --output-dir ./output
+./build-rpm.sh --base-image nvidia/cuda:12.6.0-devel-rockylinux9 --output-dir ./output
 ```
 
 ### Manual build
 
 ```bash
 cd packaging/rpm
-docker build --build-arg BASE_IMAGE=nvidia/cuda:12.4.0-devel-rockylinux8 -f Dockerfile.rpm -t libtriton-jit-rpm-builder ../..
+docker build --build-arg BASE_IMAGE=nvidia/cuda:12.6.0-devel-rockylinux9 -f Dockerfile.rpm -t libtriton-jit-rpm-builder ../..
 ```
 
 ## Package Contents
 
-### libtriton-jit (Runtime Package)
-- `/usr/lib/*/libtriton_jit.so.*` - Shared library
+### libtriton-jit-nvidia (Runtime Package)
+- `/usr/lib/*/libtriton_jit.so` - Shared library (not soname-versioned)
 - `/usr/share/triton_jit/scripts/*.py` - Python helper scripts
 
-### libtriton-jit-dev (Development Package)
+### libtriton-jit-nvidia-dev (Development Package)
 - `/usr/include/triton_jit/` - Header files
-- `/usr/lib/*/libtriton_jit.so` - Development symlink
 - `/usr/lib/*/cmake/TritonJIT/` - CMake configuration files
+- `/usr/include/fmt/`, `/usr/lib/*/libfmt.a`, `/usr/lib/*/cmake/fmt/` -
+  bundled fmt (built via FetchContent; hence `Conflicts: libfmt-dev`)
 
 ## GitHub Actions
 
-The `.github/workflows/build-packages.yml` workflow automatically builds packages on push/PR:
-- Debian packages for Ubuntu 22.04 and 24.04
-- RPM packages for Rocky Linux 8 and 9
+The `.github/workflows/build-deb.yml` and `build-rpm.yml` workflows build
+packages on tag push (`v*`) and on PRs that touch packaging, targeting the
+FlagOS NVIDIA environment:
+- Debian packages on Ubuntu 22.04 + CUDA 12.8
+- RPM packages on Rocky Linux 9 + CUDA 12.6
 
 ## Dependencies
 
@@ -76,6 +79,6 @@ The `.github/workflows/build-packages.yml` workflow automatically builds package
 
 ## Notes
 
-- The packages are built using external dependencies (nlohmann-json, fmt, pybind11) rather than fetching them during build
+- pybind11 is supplied externally (via pip); nlohmann-json and fmt are downloaded via CMake FetchContent at build time (the distro versions are too old)
 - RPATH is removed from the shared libraries during packaging
 - Examples are not built in the packages to reduce build time

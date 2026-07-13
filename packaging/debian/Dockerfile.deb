@@ -1,32 +1,45 @@
-# Multi-stage Dockerfile to build Debian packages for libtriton-jit
+# Multi-stage Dockerfile to build Debian packages for libtriton-jit.
+#
+# Targets the FlagOS NVIDIA build environment (ubuntu22.04 + cuda12.8 +
+# python3.12 + torch2.10+cu128), matching the flaggems-nvidia-12.8
+# container so the resulting libtriton-jit-dev is ABI-compatible with
+# the FlagGems C++ operator build that consumes it.
+#
+# Ubuntu 22.04 ships cmake 3.22 (< the 3.25 this project requires) and
+# nlohmann-json 3.10.5 (< 3.11.3), so cmake comes from pip and json is
+# fetched at build time (see debian/rules USE_EXTERNAL_JSON=OFF). fmt is
+# fetched too (USE_EXTERNAL_FMTLIB=OFF).
 
-ARG BASE_IMAGE=nvidia/cuda:12.6.0-devel-ubuntu24.04
+ARG BASE_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04
 FROM ${BASE_IMAGE} AS builder
 
+ARG PYTHON_VERSION=3.12
+ARG TORCH_INDEX=https://resource.flagos.net/repository/flagos-pypi-nvidia/simple
+ARG TORCH_PACKAGES="torch==2.10.0+cu128 triton==3.6.0"
+# Cap build parallelism: torch-heavy C++ at full core count OOMs
+# constrained runners (GitHub-hosted runners are ~16 GB).
+ARG BUILD_PARALLEL=4
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Debian packaging tools and build dependencies
-# Ubuntu 24.04 provides cmake 3.28+, nlohmann-json 3.11.3, libfmt 10.2.1
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    debhelper \
-    devscripts \
-    dpkg-dev \
-    fakeroot \
-    libfmt-dev \
-    ninja-build \
-    nlohmann-json3-dev \
-    patchelf \
-    python3-dev \
-    python3-pip \
-    python3-setuptools \
-    git \
+# Packaging tools + python3.12 (deadsnakes; 22.04 system python is 3.10,
+# but libtriton_jit links pybind11::embed -> libpython, so the python
+# minor must match the consuming container, which is 3.12).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common curl ca-certificates git \
+        build-essential ninja-build patchelf \
+        debhelper devscripts dpkg-dev fakeroot \
+    && add-apt-repository -y ppa:deadsnakes/ppa && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python${PYTHON_VERSION} 1 \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch, Triton, and pybind11 via pip
-RUN pip3 install --no-cache-dir --break-system-packages \
-    "torch>=2.5.0" "triton>=3.1.0" "pybind11"
+# pip cmake (>=3.25) + ninja + pybind11, then torch/triton from the
+# FlagOS NVIDIA index (same source the FlagGems container uses).
+RUN python3 -m pip install --no-cache-dir "cmake>=3.25,<4.0" "ninja==1.13.0" "pybind11==3.0.3"
+RUN python3 -m pip install --no-cache-dir --index-url ${TORCH_INDEX} ${TORCH_PACKAGES}
 
 # Copy source code
 COPY . /workspace/libtriton-jit
@@ -37,8 +50,9 @@ RUN if [ -d "packaging/debian" ]; then \
         cp -r packaging/debian debian; \
     fi
 
-# Build the Debian package (-d to skip dep checks, deps are container-provided)
-RUN dpkg-buildpackage -us -uc -b -d || \
+# Build the Debian package (-d to skip dep checks; CUDA/torch deps are
+# container-provided, not apt packages). parallel capped to avoid OOM.
+RUN DEB_BUILD_OPTIONS="parallel=${BUILD_PARALLEL}" dpkg-buildpackage -us -uc -b -d || \
     { echo "Build failed, checking logs..."; \
       find /workspace -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true; \
       exit 1; }
