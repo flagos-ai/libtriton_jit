@@ -47,16 +47,26 @@ std::filesystem::path get_path_of_this_library() {
 
 std::filesystem::path get_script_dir() {
   const static std::filesystem::path script_dir = []() {
-    std::filesystem::path installed_script_dir =
-        get_path_of_this_library().parent_path().parent_path() / "share" / "triton_jit" / "scripts";
-
-    if (std::filesystem::exists(installed_script_dir)) {
-      return installed_script_dir;
-    } else {
-      std::filesystem::path source_script_dir =
-          std::filesystem::path(__FILE__).parent_path().parent_path() / "scripts";
-      return source_script_dir;
+    // Explicit override wins, so a user can always point at the scripts.
+    if (const char* env = std::getenv("TRITON_JIT_SCRIPT_DIR")) {
+      return std::filesystem::path(env);
     }
+
+    // Search upward from the library directory for share/triton_jit/scripts.
+    // The library may live at <prefix>/lib/libtriton_jit.so, but under Debian
+    // multiarch it is at <prefix>/lib/x86_64-linux-gnu/libtriton_jit.so, one
+    // level deeper, so a fixed parent count does not work for both layouts.
+    std::filesystem::path dir = get_path_of_this_library().parent_path();
+    for (int i = 0; i < 3 && !dir.empty(); ++i) {
+      std::filesystem::path candidate = dir / "share" / "triton_jit" / "scripts";
+      if (std::filesystem::exists(candidate)) {
+        return candidate;
+      }
+      dir = dir.parent_path();
+    }
+
+    // Fall back to the in-tree scripts (source checkout / build tree).
+    return std::filesystem::path(__FILE__).parent_path().parent_path() / "scripts";
   }();
   return script_dir;
 }
