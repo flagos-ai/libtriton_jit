@@ -231,6 +231,14 @@ export MACA_PATH=${MACA_PATH:-/opt/maca}
 export CUCC_PATH=$MACA_PATH/tools/cu-bridge
 export PATH=$CUCC_PATH/tools:$PATH
 export CUCC_CMAKE_ENTRY=2
+# cu-bridge cannot run Caffe2's CUDA compute-arch detection probe (a try_run),
+# so find_package(Torch) fails. Set any value to make it skip detection; the
+# MACA build is CXX-only, so the value does not affect what is compiled.
+export TORCH_CUDA_ARCH_LIST=10.0
+# The mxcc linker does not search the host GCC directory, so `-lstdc++` fails
+# with "cannot find -lstdc++". Add the directory holding libstdc++.so (adjust
+# the GCC version to match your toolchain).
+export LIBRARY_PATH=/usr/lib/gcc/x86_64-linux-gnu/11:$LIBRARY_PATH
 cmake_maca -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=MACA
 make_maca -C build/ -j2
 
