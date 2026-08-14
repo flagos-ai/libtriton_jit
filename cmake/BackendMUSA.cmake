@@ -48,8 +48,10 @@ if(MUSA_RUNTIME_LIB AND MUSA_DRIVER_LIB AND MUSA_INCLUDE_DIR)
     message(STATUS "Found MUSA Include: ${MUSA_INCLUDE_DIR}")
 
     # Create MUSA::musa_runtime imported target
+    # GLOBAL so that consumers (e.g. FlagFFT) added via add_subdirectory
+    # can link against it from the parent scope.
     if(NOT TARGET MUSA::musa_runtime)
-        add_library(MUSA::musa_runtime INTERFACE IMPORTED)
+        add_library(MUSA::musa_runtime INTERFACE IMPORTED GLOBAL)
         set_target_properties(MUSA::musa_runtime PROPERTIES
             INTERFACE_INCLUDE_DIRECTORIES "${MUSA_INCLUDE_DIR}"
             INTERFACE_LINK_LIBRARIES "${MUSA_RUNTIME_LIB};${MUSA_DRIVER_LIB}"
