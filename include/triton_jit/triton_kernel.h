@@ -151,7 +151,7 @@ class TritonKernelImpl {
       metadata.grid_y = grid_y;
       metadata.grid_z = grid_z;
       metadata.num_warps = num_warps;
-      metadata.shared_memory = shared_memory;
+      metadata.shared_memory = cached_shared_memory_;
       metadata.signature = signature;
       if constexpr (std::is_pointer_v<typename Backend::StreamType>) {
         metadata.stream = reinterpret_cast<void*>(stream);
