@@ -1,3 +1,23 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 # Since the library links torch, we need to ensure the same ABI with pre-compiled torch
 # libtorch installed from pypi is not built with cxx11 abi,
 # if we split the library into several targets, we need to ensure that the ABI is the same
@@ -5,7 +25,13 @@
 # the cxx flags from torch, so we just merge then as one target, for simplicity
 # then it can use the same cxx flags with public dependency transitivity
 # --------------------------- triton jit function ---------------------------
-add_library(triton_jit SHARED triton_jit_function.cpp jit_utils.cpp kernel_metadata.cpp)
+add_library(
+  triton_jit SHARED
+  triton_jit_function.cpp
+  jit_function_arg.cpp
+  jit_utils.cpp
+  kernel_metadata.cpp
+  launch_hooks.cpp)
 target_include_directories(triton_jit
   PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
@@ -19,6 +45,22 @@ if(BACKEND STREQUAL "NPU")
 elseif(BACKEND STREQUAL "MUSA")
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch MUSA::musa_runtime fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "MACA")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch MACA::mcruntime fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "MLU")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch MLU::mlu_runtime fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "GCU")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch GCU::efrt fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "HCU")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch hip::host fmt::fmt-header-only
       PRIVATE pybind11::embed)
 else()
     target_link_libraries(triton_jit

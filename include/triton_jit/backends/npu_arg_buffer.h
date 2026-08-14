@@ -1,9 +1,30 @@
+// Copyright 2026 FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 #pragma once
 
 #include <cctype>
 #include <cstring>
-#include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "c10/util/Logging.h"
@@ -122,52 +143,114 @@ class NpuArgBuffer {
  * - "nullopt" is skipped
  * - "true"/"false" are boolean constexpr (skipped)
  */
-inline std::vector<NpuArgInfo> parse_signature(const std::string& sig) {
-  std::vector<NpuArgInfo> layout;
-  std::stringstream ss(sig);
-  std::string token;
+inline std::string trim_signature_token(std::string_view token) {
+  const size_t start = token.find_first_not_of(" \t");
+  if (start == std::string_view::npos) {
+    return "";
+  }
+  const size_t end = token.find_last_not_of(" \t");
+  return std::string(token.substr(start, end - start + 1));
+}
 
-  while (std::getline(ss, token, ',')) {
-    size_t start = token.find_first_not_of(" \t");
-    size_t end = token.find_last_not_of(" \t");
-    if (start == std::string::npos) continue;
-    token = token.substr(start, end - start + 1);
+inline std::vector<std::string> split_signature_tokens(std::string_view signature) {
+  std::vector<std::string> tokens;
+  size_t token_start = 0;
+  int depth = 0;
 
-    if (token.empty()) continue;
-    if (token == "nullopt") continue;
-    if (token == "true" || token == "false") continue;  // boolean constexpr
-
-    bool is_number = !token.empty() && (std::isdigit(token[0]) ||
-                                        (token[0] == '-' && token.size() > 1 && std::isdigit(token[1])));
-    if (is_number) continue;
-
-    size_t colon_pos = token.find(':');
-    if (colon_pos != std::string::npos) {
-      token = token.substr(0, colon_pos);
+  for (size_t i = 0; i < signature.size(); ++i) {
+    const char ch = signature[i];
+    if (ch == '(') {
+      ++depth;
+    } else if (ch == ')') {
+      if (depth == 0) {
+        throw std::invalid_argument("Unmatched ')' in signature");
+      }
+      --depth;
+    } else if (ch == ',' && depth == 0) {
+      std::string token = trim_signature_token(signature.substr(token_start, i - token_start));
+      if (token.empty()) {
+        throw std::invalid_argument("Empty token in signature");
+      }
+      tokens.push_back(std::move(token));
+      token_start = i + 1;
     }
-
-    NpuArgInfo info;
-
-    if (token[0] == '*') {
-      info.type = NpuArgType::POINTER;
-    } else if (token.substr(0, 3) == "i64" || token.substr(0, 3) == "u64") {
-      info.type = NpuArgType::I64;
-    } else if (token.substr(0, 3) == "i32" || token.substr(0, 3) == "u32") {
-      info.type = NpuArgType::I32;
-    } else if (token.substr(0, 4) == "fp64" || token.substr(0, 3) == "f64") {
-      info.type = NpuArgType::F64;
-    } else if (token.substr(0, 4) == "fp32" || token.substr(0, 3) == "f32") {
-      info.type = NpuArgType::F32;
-    } else if (token.substr(0, 4) == "fp16" || token.substr(0, 3) == "f16" || token.substr(0, 4) == "bf16") {
-      info.type = NpuArgType::F32;
-    } else {
-      LOG(WARNING) << "Unknown type in signature: " << token << ", defaulting to i64";
-      info.type = NpuArgType::I64;
-    }
-
-    layout.push_back(info);
   }
 
+  if (depth != 0) {
+    throw std::invalid_argument("Unmatched '(' in signature");
+  }
+
+  std::string final_token = trim_signature_token(signature.substr(token_start));
+  if (!final_token.empty()) {
+    tokens.push_back(std::move(final_token));
+  } else if (!tokens.empty()) {
+    throw std::invalid_argument("Empty token in signature");
+  }
+  return tokens;
+}
+
+inline void append_signature_token(std::string token, std::vector<NpuArgInfo>& layout) {
+  if (token.starts_with('(') && token.ends_with(')')) {
+    std::string_view inner(token.data() + 1, token.size() - 2);
+    if (trim_signature_token(inner).empty()) {
+      throw std::invalid_argument("Runtime tuple signature must not be empty");
+    }
+    for (std::string element : split_signature_tokens(inner)) {
+      if (element.find_first_of("()") != std::string::npos) {
+        throw std::invalid_argument("Nested runtime tuple signatures are not supported");
+      }
+      append_signature_token(std::move(element), layout);
+    }
+    return;
+  }
+
+  if (token.starts_with("@jit:")) {
+    return;
+  }
+
+  if (token == "nullopt" || token == "true" || token == "false") {
+    return;
+  }
+
+  const bool is_number =
+      std::isdigit(static_cast<unsigned char>(token[0])) ||
+      (token[0] == '-' && token.size() > 1 &&
+       std::isdigit(static_cast<unsigned char>(token[1])));
+  if (is_number) {
+    return;
+  }
+
+  const size_t colon_pos = token.find(':');
+  if (colon_pos != std::string::npos) {
+    token = token.substr(0, colon_pos);
+  }
+
+  NpuArgInfo info;
+  if (token[0] == '*') {
+    info.type = NpuArgType::POINTER;
+  } else if (token.substr(0, 3) == "i64" || token.substr(0, 3) == "u64") {
+    info.type = NpuArgType::I64;
+  } else if (token.substr(0, 3) == "i32" || token.substr(0, 3) == "u32") {
+    info.type = NpuArgType::I32;
+  } else if (token.substr(0, 4) == "fp64" || token.substr(0, 3) == "f64") {
+    info.type = NpuArgType::F64;
+  } else if (token.substr(0, 4) == "fp32" || token.substr(0, 3) == "f32") {
+    info.type = NpuArgType::F32;
+  } else if (token.substr(0, 4) == "fp16" || token.substr(0, 3) == "f16" ||
+             token.substr(0, 4) == "bf16") {
+    info.type = NpuArgType::F32;
+  } else {
+    LOG(WARNING) << "Unknown type in signature: " << token << ", defaulting to i64";
+    info.type = NpuArgType::I64;
+  }
+  layout.push_back(info);
+}
+
+inline std::vector<NpuArgInfo> parse_signature(const std::string& sig) {
+  std::vector<NpuArgInfo> layout;
+  for (std::string token : split_signature_tokens(sig)) {
+    append_signature_token(std::move(token), layout);
+  }
   return layout;
 }
 

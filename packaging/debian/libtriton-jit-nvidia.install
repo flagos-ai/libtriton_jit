@@ -1,0 +1,2 @@
+usr/lib/*/libtriton_jit.so
+usr/share/triton_jit/scripts/*.py

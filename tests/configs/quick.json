@@ -1,0 +1,8 @@
+{
+    "description": "Quick test configuration - runs basic operators only",
+    "timeout": 60,
+    "categories": ["pointwise", "reduce"],
+    "operators": ["add", "sum", "fill", "max"],
+    "warmup_iters": 5,
+    "bench_iters": 20
+}

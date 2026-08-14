@@ -1,5 +1,27 @@
+// Copyright 2026 FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -10,6 +32,49 @@
 #include "triton_jit/jit_utils.h"
 
 namespace triton_jit {
+
+// Metadata available at the C++ runtime's kernel dispatch point. Hooks run
+// synchronously, but the strings are owned so callers may safely retain a copy.
+struct LaunchMetadata {
+  std::string kernel_name;
+  unsigned int grid_x = 0;
+  unsigned int grid_y = 0;
+  unsigned int grid_z = 0;
+  int num_warps = 0;
+  unsigned int shared_memory = 0;
+  std::string signature;
+  // Null when Backend::StreamType is not pointer-representable.
+  void* stream = nullptr;
+};
+
+// Hooks execute synchronously on the launching thread and may be invoked
+// concurrently by multiple launch threads. Callbacks are responsible for
+// synchronizing their own state.
+//
+// Exceptions propagate to the caller. If enter throws, the kernel is not
+// submitted. Exit runs only after Backend::launch_kernel returns successfully;
+// if exit throws, the kernel has already been submitted.
+using LaunchHook = std::function<void(const LaunchMetadata&)>;
+
+// Hook updates affect subsequent launches. An in-flight launch retains the
+// immutable enter/exit snapshot acquired before invoking enter, so a hook may
+// safely update or clear the process-wide hooks.
+void set_launch_enter_hook(LaunchHook hook);
+void set_launch_exit_hook(LaunchHook hook);
+void clear_launch_hooks();
+
+namespace detail {
+
+struct LaunchHooksState {
+  LaunchHook enter;
+  LaunchHook exit;
+};
+
+using LaunchHooksSnapshot = std::shared_ptr<const LaunchHooksState>;
+
+LaunchHooksSnapshot get_launch_hooks_snapshot();
+
+}  // namespace detail
 
 // Forward declaration
 template <BackendPolicy Backend>
@@ -75,6 +140,27 @@ class TritonKernelImpl {
     // Prepare backend-specific launch options (no branching)
     auto opts = Backend::prepare_launch(dir_, kernel_name_, cached_shared_memory_, signature, num_args);
 
+    // Take one immutable snapshot for the whole launch. Updating or clearing the
+    // process-wide hooks from another thread (or from a hook itself) only affects
+    // subsequent launches.
+    detail::LaunchHooksSnapshot hooks = detail::get_launch_hooks_snapshot();
+    LaunchMetadata metadata;
+    if (hooks) {
+      metadata.kernel_name = kernel_name_;
+      metadata.grid_x = grid_x;
+      metadata.grid_y = grid_y;
+      metadata.grid_z = grid_z;
+      metadata.num_warps = num_warps;
+      metadata.shared_memory = shared_memory;
+      metadata.signature = signature;
+      if constexpr (std::is_pointer_v<typename Backend::StreamType>) {
+        metadata.stream = reinterpret_cast<void*>(stream);
+      }
+      if (hooks->enter) {
+        hooks->enter(metadata);
+      }
+    }
+
     // Launch kernel using backend policy (unified interface)
     Backend::launch_kernel(stream,
                            kernel_handle_,
@@ -86,6 +172,10 @@ class TritonKernelImpl {
                            block_z,
                            args,
                            opts);
+
+    if (hooks && hooks->exit) {
+      hooks->exit(metadata);
+    }
   }
 
   const std::string& get_dir() const {

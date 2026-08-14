@@ -1,3 +1,23 @@
+// Copyright 2026 FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 #include "triton_jit/kernel_metadata.h"
 
 #include <fstream>
@@ -78,6 +98,43 @@ NpuKernelMetadata load_npu_metadata(const std::string& dir, const std::string& k
     LOG(WARNING) << fmt::format("Failed to parse NPU metadata {}: {}", path, e.what());
   }
 
+  return meta;
+}
+
+HcuKernelMetadata load_hcu_metadata(const std::string& dir, const std::string& kernel_name) {
+  std::string path = fmt::format("{}/{}.json", dir, kernel_name);
+  std::ifstream f(path);
+  HcuKernelMetadata meta;
+  if (!f.is_open()) {
+    return meta;
+  }
+
+  try {
+    nlohmann::json j = nlohmann::json::parse(f);
+    meta.shared = j.value("shared", 0u);
+    if (j.contains("target") && j["target"].contains("arch")) {
+      meta.arch = j["target"]["arch"].get<std::string>();
+    }
+  } catch (const nlohmann::json::exception& e) {
+    LOG(WARNING) << fmt::format("Failed to parse HCU metadata {}: {}", path, e.what());
+  }
+  return meta;
+}
+
+MluKernelMetadata load_mlu_metadata(const std::string& dir, const std::string& kernel_name) {
+  std::string path = fmt::format("{}/{}.json", dir, kernel_name);
+  std::ifstream f(path);
+  MluKernelMetadata meta;
+  if (!f.is_open()) {
+    return meta;
+  }
+  nlohmann::json j = nlohmann::json::parse(f);
+  meta.shared = j.value("shared", 0u);
+  meta.num_warps = j.value("num_warps", 1);
+  meta.promote_shared = j.value("promote_shared", false);
+  if (j.contains("target") && j["target"].contains("arch")) {
+    meta.arch = j["target"]["arch"].get<unsigned int>();
+  }
   return meta;
 }
 

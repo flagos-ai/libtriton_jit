@@ -1,0 +1,6 @@
+usr/include/triton_jit/*
+usr/include/fmt/*
+usr/lib/*/cmake/TritonJIT/*
+usr/lib/*/cmake/fmt/*
+usr/lib/*/libfmt.a
+usr/lib/*/pkgconfig/fmt.pc

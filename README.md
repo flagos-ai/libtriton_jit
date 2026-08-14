@@ -1,5 +1,9 @@
 # Triton JIT C++ runtime
 
+> [!IMPORTANT]
+> **The `multi-backend` branch is frozen.** It has been merged into `master` (#35) and is now read-only — no further contributions are accepted there.
+> **All future development must target `master`.** Please branch from and open pull requests against `master`.
+
 ## Introduction
 
 The `libtriton_jit` project is a multi-backend C++ runtime for Triton JIT functions.
@@ -13,6 +17,10 @@ It supports multiple hardware backends through a compile-time backend policy des
 - **MUSA**: Moore Threads GPUs (warp size 32)
 - **NPU**: Ascend/Huawei (ACL API)
 - **IX**: Tianshu GPUs (warp size 64)
+- **MACA**: MetaX GPUs
+- **MLU**: Cambricon MLUs (warp size 1 or 4)
+- **GCU**: Enflame GCUs
+- **HCU**: Hygon GPUs (warp size 64, HIP-compatible)
 
 The project aims to reduce the inevitable Python overhead when using Triton in Python code.
 For many kernels, the execution time of the kernel is much shorter than the CPU overhead.
@@ -198,7 +206,7 @@ Their pre-packaged compilers and standard libraries can often lead to conflicts 
 
 ```shell
 # activate the Python virtualenv (optional)
-pip install "torch>=2.5" "triton>=3.1.0,<3.4.0" "cmake" "ninja" "packaging" "pybind11" "numpy"
+pip install "torch>=2.5" "triton>=3.1.0,<3.7.0" "cmake" "ninja" "packaging" "pybind11" "numpy"
 ```
 
 ### Configure & Generate the Build System
@@ -217,7 +225,29 @@ cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=MUSA
 
 # IX (Tianshu)
 cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=IX
+
+# MACA (MetaX)
+export MACA_PATH=${MACA_PATH:-/opt/maca}
+export CUCC_PATH=$MACA_PATH/tools/cu-bridge
+export PATH=$CUCC_PATH/tools:$PATH
+export CUCC_CMAKE_ENTRY=2
+cmake_maca -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=MACA
+make_maca -C build/ -j2
+
+# MLU (Cambricon)
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=MLU
+
+# HCU (Hygon)
+cmake -S . -B build/ -DPython_ROOT="$(which python)/../.." -DBACKEND=HCU
 ```
+
+On Ubuntu 22.04+ with DTK, if linking fails due to missing `librt.so`, create the stub once:
+
+```shell
+sudo ln -s /usr/lib/x86_64-linux-gnu/librt.so.1 /usr/lib/x86_64-linux-gnu/librt.so
+```
+
+Alternatively, pass `-DHCU_CREATE_LIBRT_STUB=ON` at configure time (requires write access to `/usr/lib`).
 
 You can also specify build type via `-DCMAKE_BUILD_TYPE` and the install prefix using `-DCMAKE_INSTALL_PREFIX`.
 
@@ -253,7 +283,7 @@ For example, `export TORCH_CPP_LOG_LEVEL=INFO`.
 
 ## Roadmap
 
-- ~~Support more backends~~ ✓ (CUDA, MUSA, NPU, IX supported)
+- ~~Support more backends~~ ✓ (CUDA, MUSA, NPU, IX, MACA, MLU, GCU, HCU supported)
 - Better argument processing
 
   - copy arguments to a buffer to ensure their lifetime;

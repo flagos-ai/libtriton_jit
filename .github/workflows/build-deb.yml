@@ -1,3 +1,23 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 name: Build Debian Packages
 
 on:
@@ -5,7 +25,7 @@ on:
     tags:
       - 'v*'
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, multi-backend ]
     paths:
       - 'src/**'
       - 'CMakeLists.txt'
@@ -21,8 +41,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - base_image: "nvidia/cuda:12.6.0-devel-ubuntu24.04"
-            label: "ubuntu2404-cuda1260"
+          # Match the FlagOS NVIDIA build env (flaggems-nvidia-12.8
+          # container): ubuntu22.04 + cuda12.8 + python3.12. A 22.04
+          # binary also runs on 24.04 (glibc backward-compat); the
+          # reverse does not hold.
+          - base_image: "nvidia/cuda:12.8.0-devel-ubuntu22.04"
+            label: "ubuntu2204-cuda1280"
 
     steps:
       - name: Checkout repository
@@ -41,6 +65,9 @@ jobs:
       - name: Upload Debian packages
         uses: actions/upload-artifact@v4
         with:
-          name: debian-packages-${{ matrix.label }}
+          # Artifact name must match flagos-packaging components/libtriton-jit.yml
+          # artifact_pattern "libtriton-jit-*-packages" so the central publish
+          # pipeline can locate it.
+          name: libtriton-jit-${{ matrix.label }}-packages
           path: output/*.deb
           retention-days: 7

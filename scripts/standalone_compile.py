@@ -1,13 +1,38 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import importlib.util
+import io
 import json
+import linecache
 import os
+import re
+import sys
+import tokenize
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import List, Tuple, Union
 
-# NPU and MTGPU require this before importing triton
+# NPU, MTGPU, MACA, GCU, and MLU require this before importing triton
 backend_env = os.environ.get("TRITON_JIT_BACKEND", "").upper()
-if backend_env in ["NPU", "MTGPU"]:
+if backend_env in ["NPU", "MTGPU", "MACA", "GCU", "MLU"]:
     os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 
 import torch  # noqa: E402
@@ -18,6 +43,16 @@ if backend_env == "MTGPU":
         import torch_musa  # noqa: F401 - Activate MUSA device and Triton mtgpu driver
     except ImportError:
         print("Warning: torch_musa not available, MTGPU backend may not work")
+elif backend_env == "GCU":
+    try:
+        import torch_gcu  # noqa: F401 - Activate GCU device and Triton enflame driver
+    except ImportError:
+        print("Warning: torch_gcu not available, GCU backend may not work")
+elif backend_env == "MLU":
+    try:
+        import torch_mlu  # noqa: F401 - Activate MLU device and Triton mlu driver
+    except ImportError:
+        print("Warning: torch_mlu not available, MLU backend may not work")
 
 import triton  # noqa: E402
 from packaging.version import Version  # noqa: E402
@@ -118,6 +153,176 @@ def sig_to_npu_type(sig: str) -> dict:
                 return {"type": "i64"}
 
 
+def _bracket_aware_split(sig: str) -> List[str]:
+    """Split on top-level commas while preserving parenthesized tuple groups."""
+    parts = []
+    current = []
+    depth = 0
+
+    for ch in sig:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                raise ValueError(f"unmatched ')' in signature: {sig}")
+            depth -= 1
+
+        if ch == "," and depth == 0:
+            part = "".join(current).strip()
+            if not part:
+                raise ValueError(f"empty token in signature: {sig}")
+            parts.append(part)
+            current = []
+        else:
+            current.append(ch)
+
+    if depth != 0:
+        raise ValueError(f"unmatched '(' in signature: {sig}")
+
+    final = "".join(current).strip()
+    if final:
+        parts.append(final)
+    elif parts:
+        raise ValueError(f"empty token in signature: {sig}")
+    return parts
+
+
+def _parse_type_token(token: str):
+    """Convert a grouped tuple token into Triton's nested signature form."""
+    token = token.strip()
+    if token.startswith("(") and token.endswith(")"):
+        inner = token[1:-1].strip()
+        if not inner:
+            raise ValueError("runtime tuple signature must not be empty")
+        elements = _bracket_aware_split(inner)
+        if any("(" in element or ")" in element for element in elements):
+            raise ValueError("nested runtime tuple signatures are not supported")
+        return tuple(elements)
+    return token
+
+
+def _normalize_gcu_signature(value):
+    """Normalize GCU signatures without changing runtime tuple ABI widths."""
+    if isinstance(value, tuple):
+        if "fp64" in value:
+            raise ValueError("GCU runtime tuple arguments do not support fp64 elements")
+        return value
+    return "fp32" if value == "fp64" else value
+
+
+def _fnv1a64(data: bytes) -> str:
+    """Return a stable, lowercase FNV-1a 64 fingerprint."""
+    value = 14695981039346656037
+    for byte in data:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def _decode_jitfunction_field(value: str, field_name: str) -> str:
+    if not value or len(value) % 2 or re.fullmatch(r"[0-9a-fA-F]+", value) is None:
+        raise ValueError(f"invalid hex-encoded JITFunction {field_name}")
+    try:
+        decoded = bytes.fromhex(value).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"JITFunction {field_name} is not valid UTF-8") from error
+    if not decoded:
+        raise ValueError(f"JITFunction {field_name} must not be empty")
+    return decoded
+
+
+def _parse_jitfunction_token(token: str) -> Tuple[str, str, str]:
+    """Parse @jit:<hex-path>:<hex-name>:<source-fingerprint>."""
+    fields = token.split(":")
+    if len(fields) != 4 or fields[0] != "@jit":
+        raise ValueError(f"invalid JITFunction token: {token}")
+
+    path = _decode_jitfunction_field(fields[1], "module path")
+    name = _decode_jitfunction_field(fields[2], "function name")
+    fingerprint = fields[3]
+    if re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None:
+        raise ValueError("JITFunction fingerprint must be 16 lowercase hex characters")
+    if not Path(path).is_absolute():
+        raise ValueError("JITFunction module path must be absolute")
+    return path, name, fingerprint
+
+
+def _unwrap_jitfunction(value, description: str):
+    seen = set()
+    current = value
+    for _ in range(32):
+        if isinstance(current, triton.runtime.JITFunction):
+            return current
+        identity = id(current)
+        if identity in seen:
+            raise TypeError(f"cycle while unwrapping {description}")
+        seen.add(identity)
+        if not hasattr(current, "fn"):
+            raise TypeError(f"{description} does not resolve to a Triton JITFunction")
+        current = current.fn
+    raise TypeError(f"wrapper depth exceeded while unwrapping {description}")
+
+
+def _load_jitfunction(path: str, name: str, fingerprint: str):
+    """Validate a source snapshot and resolve one Triton JITFunction."""
+    source_path = Path(path)
+    source = source_path.read_bytes()
+    actual_fingerprint = _fnv1a64(source)
+    if actual_fingerprint != fingerprint:
+        raise ValueError(
+            "JITFunction source changed after the C++ argument was constructed: "
+            f"expected {fingerprint}, got {actual_fingerprint}"
+        )
+
+    module_name = (
+        f"_triton_jit_callee_{fingerprint}_{_fnv1a64(str(source_path).encode('utf-8'))}"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load JITFunction module: {source_path}")
+    module = importlib.util.module_from_spec(spec)
+    linecache_key = str(source_path)
+    missing = object()
+    previous_module = sys.modules.get(module_name, missing)
+    previous_linecache = linecache.cache.get(linecache_key, missing)
+    sys.modules[module_name] = module
+    try:
+        # Execute the exact bytes whose fingerprint was validated above.
+        # SourceFileLoader may otherwise reuse a same-timestamp, same-size .pyc
+        # after an in-place source edit, disconnecting the cache key from code.
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(source).readline)
+        source_text = source.decode(encoding)
+        linecache.cache[linecache_key] = (
+            len(source),
+            None,
+            source_text.splitlines(keepends=True),
+            linecache_key,
+        )
+        code = compile(source, linecache_key, "exec")
+        exec(code, module.__dict__)
+        value = getattr(module, name)
+        return _unwrap_jitfunction(value, f"{source_path}:{name}")
+    except Exception:
+        if previous_module is missing:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous_module
+        if previous_linecache is missing:
+            linecache.cache.pop(linecache_key, None)
+        else:
+            linecache.cache[linecache_key] = previous_linecache
+        raise
+
+
+def _resolve_jitfunction_constants(signature: List[str]) -> dict:
+    resolved = {}
+    for index, token in enumerate(signature):
+        if token.startswith("@jit:"):
+            path, name, fingerprint = _parse_jitfunction_token(token)
+            resolved[index] = _load_jitfunction(path, name, fingerprint)
+    return resolved
+
+
 def generate_arg_layout(
     signature: List[str], constexpr_indices: List[int]
 ) -> List[dict]:
@@ -134,7 +339,7 @@ def generate_arg_layout(
 
     for i, sig in enumerate(signature):
         # Check if this is a constexpr by index or by value
-        if i in constexpr_indices:
+        if i in constexpr_indices or sig.startswith("@jit:"):
             continue
 
         # Try to parse as constexpr value
@@ -153,10 +358,12 @@ def generate_arg_layout(
         if sig_clean == "nullopt":
             continue  # Skip nullopt
 
-        # Convert to NPU type
-        type_info = sig_to_npu_type(sig)
-        if type_info["type"] != "constexpr":
-            arg_layout.append(type_info)
+        parsed = _parse_type_token(sig)
+        runtime_types = parsed if isinstance(parsed, tuple) else (parsed,)
+        for runtime_type in runtime_types:
+            type_info = sig_to_npu_type(runtime_type)
+            if type_info["type"] != "constexpr":
+                arg_layout.append(type_info)
 
     return arg_layout
 
@@ -206,12 +413,50 @@ def kernel_suffix(signature, specialization):
     return suffix
 
 
+def _coerce_opt(v):
+    """Coerce a string option value coming from the C++ CompileOptions.extra map into
+    the type triton.compile expects (int / float / bool), else keep it as a string.
+    C++ can only hand us strings, but options like num_ctas are ints and some are bools."""
+    if not isinstance(v, str):
+        return v
+    low = v.strip().lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
+
+def _merge_compile_options(
+    num_warps: int,
+    num_stages: int,
+    extra_options: dict = None,
+) -> dict:
+    """Build backend compile options without allowing extras to override core fields."""
+    extra_options = extra_options or {}
+    reserved = sorted({"num_warps", "num_stages"}.intersection(extra_options))
+    if reserved:
+        names = ", ".join(reserved)
+        raise ValueError(f"extra_options must not override reserved option(s): {names}")
+
+    opts = {"num_warps": num_warps, "num_stages": num_stages}
+    opts.update({_k: _coerce_opt(_v) for _k, _v in extra_options.items()})
+    return opts
+
+
 def _compile_a_kernel(
     fn: triton.runtime.JITFunction,
     signature: str,
     num_warps: int = 4,
     num_stages: int = 3,
     device_id: int = 0,
+    extra_options: dict = None,
 ) -> Tuple[str, str]:
     """compile a kernel."""
     # static signature
@@ -228,26 +473,35 @@ def _compile_a_kernel(
     # for bool use i1, for boolean values, use 0 or 1.
     # split it
 
-    signature: List[str] = list(map(lambda s: s.strip(" "), signature.split(",")))
+    signature: List[str] = _bracket_aware_split(signature)
     num_args = len(signature)
     assert num_args == len(
         fn.params
     ), f"number of argument mismatch:  Actual({num_args}), Function Definition({len(fn.params)})"
 
-    constants = {
-        i: constexpr(s) for i, s in enumerate(signature) if i in constexpr_indices
-    }
-    assert len(constants) == len(
-        constexpr_indices
-    ), f"number of constexpr mismatch:  Actual({len(constants)}), Function Definition({len(constexpr_indices)})"
+    constants = _resolve_jitfunction_constants(signature)
+    for i, token in enumerate(signature):
+        if i in constexpr_indices and i not in constants:
+            constants[i] = constexpr(token)
+    missing_constexpr = [i for i in constexpr_indices if i not in constants]
+    assert not missing_constexpr, (
+        "number of constexpr mismatch: "
+        f"missing parameter indices {missing_constexpr}"
+    )
 
     # signature, no specializations here
     signature_without_spec = {
-        i: s.split(":")[0] for i, s in enumerate(signature) if i not in constants
+        i: _parse_type_token(s.split(":")[0])
+        for i, s in enumerate(signature)
+        if i not in constants
     }
 
     # specialization: divisibility by 16 or equal to 1
-    hints = {i: constexpr(s.split(":")[1]) for i, s in enumerate(signature) if ":" in s}
+    hints = {
+        i: constexpr(s.rsplit(":", 1)[1])
+        for i, s in enumerate(signature)
+        if i not in constants and ":" in s
+    }
     hints = {k: v for k, v in hints.items() if v is not None}
     for h in hints.values():
         assert h in [1, 16], f"Only 1 and 16 are valid hints, got {h}"
@@ -268,17 +522,19 @@ def _compile_a_kernel(
                 "cls": "AttrsDescriptor",
             }
         )
-    elif triton_version >= Version("3.3.0"):
+    elif triton_version.major == 3 and triton_version.minor == 3:
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     elif triton_version.major == 3 and triton_version.minor == 4:
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     elif triton_version.major == 3 and triton_version.minor == 5:
         attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
+    elif triton_version.major == 3 and triton_version.minor == 6:
+        attrs = {(k,): [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     else:
         raise RuntimeError(
             "Triton may change APIs, we cannot ensure compatibility here now. "
             "You can goto https://github.com/flagos-ai/libtriton_jit to raise an issue "
-            "about supporting your triton version. Triton 3.1/3.2/3.3/3.4/3.5 are supported now."
+            "about supporting your triton version. Triton 3.1/3.2/3.3/3.4/3.5/3.6 are supported now."
         )
 
     # integer 1 in value, but the corresponding ArgType in static signature is not constexpr are added into constants
@@ -290,7 +546,13 @@ def _compile_a_kernel(
             constants[i] = None
             signature_without_spec[i] = "constexpr"
 
-    if Version("3.1.0") <= triton_version < Version("3.2.0"):
+    # GCU backend: downcast fp64 to fp32 in signature to avoid arith.extf
+    # (GCU hardware/compiler does not support double precision operations)
+    if get_backend() == "GCU":
+        for k in signature_without_spec:
+            signature_without_spec[k] = _normalize_gcu_signature(signature_without_spec[k])
+
+    if Version("3.0.0") <= triton_version < Version("3.2.0"):
         src = triton.compiler.ASTSource(
             fn=fn,
             constants=constants,
@@ -334,15 +596,42 @@ def _compile_a_kernel(
     # STEP1: JITFunction, constants, signature, specialization
 
     # STEP2: compile options for the backend
-    opts = {"num_warps": num_warps, "num_stages": num_stages}
+    # Merge backend-specific compiler switches threaded from C++ CompileOptions.extra
+    # (e.g. {"opt_level": "O2"} for MLU). They join `opts` before parse_options so the
+    # backend's own option validation sees them.
+    opts = _merge_compile_options(num_warps, num_stages, extra_options)
 
     # STEP3: ast source, target, compile options (backend-specific)
     backend = get_backend()
-    if backend in ["NPU", "MUSA", "MTGPU"]:
-        # NPU/MUSA/MTGPU: no device context manager
-        # Note: MTGPU is the Triton backend name for MUSA (Moore Threads GPU)
+    if backend in ["NPU", "MUSA", "MTGPU", "MACA", "GCU"]:
+        # NPU/MUSA/MTGPU/MACA/GCU: no CUDA device context manager
         target = triton.runtime.driver.active.get_current_target()
         ccinfo = triton.compile(src, target=target, options=opts)
+    elif backend in ["MLU"]:
+        # torch_mlu only registers torch.mlu when initialization sees CPU.
+        # The embedded C++ runtime has already activated MLU, so re-run
+        # torch_mlu initialization while temporarily masking the accelerator.
+        if not hasattr(torch, "mlu"):
+            import sys as _sys
+
+            _orig_cur = torch.accelerator.current_accelerator
+            torch.accelerator.current_accelerator = lambda *args, **kwargs: None
+            try:
+                _sys.modules.pop("torch_mlu", None)
+                import torch_mlu  # noqa: F401
+            finally:
+                torch.accelerator.current_accelerator = _orig_cur
+            if not hasattr(torch, "mlu"):
+                raise RuntimeError(
+                    "failed to register torch.mlu for MLU triton driver"
+                )
+
+        target = triton.runtime.driver.active.get_current_target()
+        opts['is_linear_hint'] = True
+        opts['restrict_ptr_hint'] = True
+        mlu_backend = triton.compiler.make_backend(target)
+        opts = mlu_backend.parse_options(opts)
+        ccinfo = triton.compile(src, target=target, options=opts.__dict__)
     else:
         # CUDA / IX: use CUDA device context
         with torch.cuda.device(device_id):
@@ -451,6 +740,7 @@ def compile_a_kernel(
     num_warps: int = 4,
     num_stages: int = 3,
     device_id: int = 0,
+    extra_options: dict = None,
 ):
     # get jit function
     source_path = Path(source_path)
@@ -463,7 +753,7 @@ def compile_a_kernel(
     while not (type(fn) is triton.runtime.JITFunction):
         fn = fn.fn
 
-    return _compile_a_kernel(fn, signature, num_warps, num_stages, device_id)
+    return _compile_a_kernel(fn, signature, num_warps, num_stages, device_id, extra_options)
 
 
 if __name__ == "__main__":

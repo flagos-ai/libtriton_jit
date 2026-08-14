@@ -1,3 +1,23 @@
+// Copyright 2026 FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 #include "triton_jit/triton_jit_function.h"
 
 #include <algorithm>
@@ -26,14 +46,18 @@ static void ensure_initialized() {
     py::gil_scoped_acquire gil;
     py::module_::import("os").attr("environ")["TRITON_JIT_BACKEND"] = BACKEND_NAME;
 
-    // Import backend-specific modules for device registration
     std::string backend_name(BACKEND_NAME);
     if (backend_name == "mtgpu") {
       try {
-        // Import torch_musa to register MUSA as PrivateUse1 backend
         py::module_::import("torch_musa");
       } catch (const py::error_already_set& e) {
         std::cerr << "Warning: Failed to import torch_musa: " << e.what() << std::endl;
+      }
+    } else if (backend_name == "GCU") {
+      try {
+        py::module_::import("torch_gcu");
+      } catch (const py::error_already_set& e) {
+        std::cerr << "Warning: Failed to import torch_gcu: " << e.what() << std::endl;
       }
     }
   });
@@ -70,14 +94,20 @@ TritonJITFunctionImpl<Backend>::TritonJITFunctionImpl(std::string_view path, std
 
 template <BackendPolicy Backend>
 const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std::string_view _signature,
-                                                                            int num_warps,
-                                                                            int num_stages,
+                                                                            const CompileOptions& opts,
                                                                             int device_index) const {
   std::string signature(_signature);
-  std::string key = fmt::format("{};{}", signature, device_index);
+  // The cache key must encode everything that changes the compiled artifact. The old
+  // key was just "{signature};{device_index}", so two launches that differed only in
+  // num_warps/num_stages/opt_level collided on the same cache entry and the second
+  // silently reused the first one's binary. Fold those compile options into the key.
+  std::string key = detail::make_kernel_cache_key(signature, device_index, opts);
 
   auto pos = this->overloads_.find(key);
   if (pos == this->overloads_.end()) {
+    if (std::getenv("LTJ_DUMP_KEY")) {
+      fmt::print(stderr, "[LTJ_CACHE_MISS] key={}\n", key);
+    }
     // Compile kernel via Python
     namespace py = pybind11;
     ensure_initialized();
@@ -90,7 +120,12 @@ const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std:
     py::object fn = mod.attr("compile_a_kernel");
     py::object ans;
     try {
-      ans = fn(this->file_path_, this->function_name_, signature, num_warps, num_stages, device_index);
+      py::dict extra_dict;
+      for (const auto& kv : opts.extra) {
+        extra_dict[py::str(kv.first)] = py::str(kv.second);
+      }
+      ans = fn(this->file_path_, this->function_name_, signature, opts.num_warps, opts.num_stages,
+               device_index, extra_dict);
     } catch (const py::error_already_set& e) {
       std::cerr << "Python exception: " << e.what() << std::endl;
       throw;
@@ -129,4 +164,31 @@ template class triton_jit::TritonJITFunctionImpl<triton_jit::IxBackend>;
 #ifdef BACKEND_MUSA
 #include "triton_jit/backends/musa_backend.h"
 template class triton_jit::TritonJITFunctionImpl<triton_jit::MusaBackend>;
+#endif
+
+#ifdef BACKEND_MACA
+#include "triton_jit/backends/maca_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::MacaBackend>;
+#endif
+
+#ifdef BACKEND_GCU
+#include "triton_jit/backends/gcu_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::GcuBackend>;
+
+namespace {
+struct GcuLibAutoInit {
+  GcuLibAutoInit() { triton_jit::ensure_initialized(); }
+};
+static GcuLibAutoInit gcu_lib_auto_init_;
+}  // namespace
+#endif
+
+#ifdef BACKEND_HCU
+#include "triton_jit/backends/hcu_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::HcuBackend>;
+#endif
+
+#ifdef BACKEND_MLU
+#include "triton_jit/backends/mlu_backend.h"
+template class triton_jit::TritonJITFunctionImpl<triton_jit::MluBackend>;
 #endif

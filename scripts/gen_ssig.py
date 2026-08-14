@@ -1,3 +1,23 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import importlib.util
 from argparse import ArgumentParser
 from dataclasses import dataclass
@@ -13,6 +33,7 @@ class Signature:
     constexpr_indices: List[int]
     non_constexpr_indices: List[int]
     specialised_indices: List[int]
+    specialised_no_alignment_indices: List[int]
 
 
 def static_signature(f: triton.runtime.JITFunction):
@@ -23,10 +44,23 @@ def static_signature(f: triton.runtime.JITFunction):
     specialised_indices = [
         i
         for (i, p) in enumerate(f.params)
-        if (not p.do_not_specialize) and (not p.is_constexpr)
+        if (not p.do_not_specialize)
+        and (not getattr(p, "do_not_specialize_on_alignment", False))
+        and (not p.is_constexpr)
+    ]
+    specialised_no_alignment_indices = [
+        i
+        for (i, p) in enumerate(f.params)
+        if (not p.do_not_specialize)
+        and getattr(p, "do_not_specialize_on_alignment", False)
+        and (not p.is_constexpr)
     ]
     return Signature(
-        arg_num, constexpr_indices, non_constexpr_indices, specialised_indices
+        arg_num,
+        constexpr_indices,
+        non_constexpr_indices,
+        specialised_indices,
+        specialised_no_alignment_indices,
     )
 
 
@@ -50,6 +84,8 @@ def extract_static_signature(source_path, fn_name):
             arg_types.append(2)
         elif i in sig.specialised_indices:
             arg_types.append(1)
+        elif i in sig.specialised_no_alignment_indices:
+            arg_types.append(3)
         else:  # non-specialzed
             arg_types.append(0)
     return arg_types

@@ -1,4 +1,4 @@
-Name:           libtriton-jit
+Name:           libtriton-jit-nvidia
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Triton JIT runtime library
@@ -6,7 +6,7 @@ Summary:        Triton JIT runtime library
 License:        MIT
 # Note: bundled fmt (MIT with optional exception) is included in the devel subpackage
 URL:            https://github.com/flagos-ai/libtriton_jit
-Source0:        %{name}-%{version}.tar.gz
+Source0:        libtriton-jit-%{version}.tar.gz
 
 # Minimal BuildRequires - CUDA, PyTorch, Triton are container-provided
 BuildRequires:  cmake
@@ -28,7 +28,7 @@ Conflicts:      fmt-devel
 Development files (headers and CMake configs) for libtriton_jit.
 
 %prep
-%autosetup -n %{name}-%{version}
+%autosetup -n libtriton-jit-%{version}
 
 %build
 # Ensure pip-installed packages (torch, triton, pybind11) are visible
@@ -46,7 +46,8 @@ TORCH_CMAKE_PATH=$(python3 -c "import importlib.util; s=importlib.util.find_spec
     -DTRITON_JIT_USE_EXTERNAL_JSON=OFF \
     -DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
     -DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
-    -DTRITON_JIT_BUILD_EXAMPLES=OFF \
+    -DTRITON_JIT_BUILD_OPERATORS=OFF \
+    -DBUILD_TESTING=OFF \
     -DTRITON_JIT_INSTALL=ON
 
 %cmake_build

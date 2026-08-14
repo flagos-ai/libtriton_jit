@@ -1,3 +1,23 @@
+// Copyright 2026 FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 #pragma once
 
 #include <cstdint>
@@ -5,6 +25,8 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -13,6 +35,7 @@
 #include "fmt/core.h"
 #include "triton_jit/backend_config.h"
 #include "triton_jit/backend_policy.h"
+#include "triton_jit/jit_function_arg.h"
 #include "triton_jit/jit_utils.h"
 #include "triton_jit/triton_kernel.h"
 
@@ -69,6 +92,7 @@ enum struct ArgType : int8_t {
   NON_CONSTEXPR = 0,
   SPECIALIZED = 1,
   CONSTEXPR = 2,
+  SPECIALIZED_NO_ALIGNMENT = 3,
 };
 
 struct StaticSignature {
@@ -79,6 +103,18 @@ struct StaticSignature {
     return arg_type.at(i);
   }
 };
+
+template <typename T>
+struct is_std_tuple : std::false_type {};
+
+template <typename... Ts>
+struct is_std_tuple<std::tuple<Ts...>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_runtime_tuple_element_v =
+    is_same_ignore_cvref<int, T>::value || is_same_ignore_cvref<unsigned int, T>::value ||
+    is_same_ignore_cvref<int64_t, T>::value || is_same_ignore_cvref<uint64_t, T>::value ||
+    is_same_ignore_cvref<float, T>::value || is_same_ignore_cvref<double, T>::value;
 
 struct ArgHandle {
   const StaticSignature& ssig;
@@ -101,9 +137,44 @@ struct ArgHandle {
       handle_optional(item);
     } else if constexpr (is_same_ignore_cvref<c10::Scalar, T>::value) {
       handle_scalar(item);
+    } else if constexpr (is_same_ignore_cvref<JitFunctionArg, T>::value) {
+      handle_jitfunction(item);
+    } else if constexpr (is_std_tuple<std::remove_cvref_t<T>>::value) {
+      handle_tuple(item);
     } else {
       handle_arg_plain(item);
     }
+  }
+
+  void handle_jitfunction(const JitFunctionArg& item) {
+    (void)this->ssig.at(idx);
+    signature.push_back(item.signature_token());
+    idx++;
+  }
+
+  template <typename... Ts>
+  void handle_tuple(const std::tuple<Ts...>& item) {
+    static_assert(sizeof...(Ts) > 0, "Runtime tuple arguments must not be empty");
+    static_assert((is_runtime_tuple_element_v<Ts> && ...),
+                  "Runtime tuple arguments contain an unsupported scalar type");
+    TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR,
+                "Runtime tuple arguments cannot be constexpr");
+
+    std::string grouped_signature = "(";
+    bool first = true;
+    auto append_element = [&](const auto& element) {
+      if (!first) {
+        grouped_signature += ",";
+      }
+      first = false;
+      this->buf.push_arg(element);
+      grouped_signature += triton_type<std::remove_cvref_t<decltype(element)>>::name;
+    };
+    std::apply([&](const auto&... elements) { (append_element(elements), ...); }, item);
+    grouped_signature += ")";
+
+    signature.push_back(std::move(grouped_signature));
+    idx++;
   }
 
   template <typename T>
@@ -127,7 +198,12 @@ struct ArgHandle {
     } else if (tp == c10::ScalarType::UInt64) {
       handle_arg_plain(*reinterpret_cast<const uint64_t*>(p));
     } else if (tp == c10::ScalarType::Double) {
+#if defined(BACKEND_GCU)
+      float f = static_cast<float>(*reinterpret_cast<const double*>(p));
+      handle_arg_plain(f);
+#else
       handle_arg_plain(*reinterpret_cast<const double*>(p));
+#endif
     } else {
       throw std::runtime_error("unsupported scalar type.");
     }
@@ -141,11 +217,23 @@ struct ArgHandle {
       // Assumption: nullopt is always treated as constexpr,
       // even if the parameter is not marked as constexpr
       signature.push_back("nullopt");
+    } else if constexpr (std::is_same_v<std::decay_t<T>, const char*> ||
+                         std::is_same_v<std::decay_t<T>, char*> ||
+                         is_same_ignore_cvref<std::string, T>::value ||
+                         is_same_ignore_cvref<std::string_view, T>::value) {
+      // A string argument (e.g. a dtype spelled "tl.float32") can only ever be
+      // a constexpr Triton parameter. Route it to handle_constexpr at compile
+      // time so the specialized / non-constexpr paths -- which require
+      // triton_type<T>::name and do not specialize for strings -- are never
+      // instantiated for a string type.
+      handle_constexpr(item);
     } else {
       if (ssig.at(idx) == ArgType::CONSTEXPR) {  // constexpr
         handle_constexpr(item);
       } else if (ssig.at(idx) == ArgType::SPECIALIZED) {  // specialized
         handle_specialized(item);
+      } else if (ssig.at(idx) == ArgType::SPECIALIZED_NO_ALIGNMENT) {
+        handle_specialized_no_alignment(item);
       } else {  // ArgType::NON_CONSTEXPR
         handle_non_constexpr(item);
       }
@@ -179,7 +267,7 @@ struct ArgHandle {
 
   template <typename T>
   void handle_specialized(const T& item) {
-    const char* dtype = triton_type<decltype(item)>::name;
+    const char* dtype = narrow_type_name(item);
     if constexpr (std::is_integral_v<std::remove_cv_t<std::remove_reference_t<decltype(item)>>>) {
       const char* specialization = "";
 #if defined(BACKEND_NPU)
@@ -201,9 +289,29 @@ struct ArgHandle {
   }
 
   template <typename T>
+  void handle_specialized_no_alignment(const T& item) {
+    const char* dtype = narrow_type_name(item);
+    if constexpr (std::is_integral_v<std::remove_cv_t<std::remove_reference_t<decltype(item)>>>) {
+      const bool equal_to_1 = item == 1;
+#if defined(BACKEND_NPU)
+      this->buf.push_arg(item);
+      signature.push_back(dtype);
+#else
+      if (!equal_to_1) {
+        this->buf.push_arg(item);
+      }
+      std::string sig_for_idx = fmt::format("{}{}", dtype, equal_to_1 ? ":1" : "");
+      signature.push_back(sig_for_idx);
+#endif
+    } else {
+      handle_non_constexpr(item);
+    }
+  }
+
+  template <typename T>
   void handle_non_constexpr(const T& item) {
     this->buf.push_arg(item);
-    const char* dtype = triton_type<decltype(item)>::name;
+    const char* dtype = narrow_type_name(item);
     signature.push_back(dtype);
   }
 
@@ -252,6 +360,9 @@ class TritonJITFunctionImpl {
     return this->static_sig_;
   }
 
+  // Backward-compatible overload: plain (num_warps, num_stages) are wrapped into a
+  // CompileOptions carrying no extra switches, then forwarded to the primary overload.
+  // Kept so existing call sites (and operator dispatch code) compile unchanged.
   template <typename... Args>
   void operator()(typename Backend::StreamType stream,
                   unsigned int grid_x,
@@ -259,6 +370,21 @@ class TritonJITFunctionImpl {
                   unsigned int grid_z,
                   unsigned int num_warps,
                   unsigned int num_stages,
+                  Args... args) const {
+    CompileOptions copts;
+    copts.num_warps = static_cast<int>(num_warps);
+    copts.num_stages = static_cast<int>(num_stages);
+    (*this)(stream, grid_x, grid_y, grid_z, copts, args...);
+  }
+
+  // Primary overload: CompileOptions carries num_warps/num_stages plus any extra
+  // backend compiler switches (e.g. {"opt_level","O2"}). All of it feeds the cache key.
+  template <typename... Args>
+  void operator()(typename Backend::StreamType stream,
+                  unsigned int grid_x,
+                  unsigned int grid_y,
+                  unsigned int grid_z,
+                  const CompileOptions& copts,
                   Args... args) const {
     const int num_args = this->static_sig_.num_args;
 
@@ -286,14 +412,14 @@ class TritonJITFunctionImpl {
 
     // Get or compile kernel
     const TritonKernelImpl<Backend>& kernel =
-        this->get_kernel(full_signature, num_warps, num_stages, device_index);
+        this->get_kernel(full_signature, copts, device_index);
 
     // Launch kernel with signature (for NPU backend to parse argument types)
     c10::SmallVector<void*> ptrs = buffer.get_ptrs();
     kernel.launch_with_signature(grid_x,
                                  grid_y,
                                  grid_z,
-                                 num_warps,
+                                 copts.num_warps,
                                  stream,
                                  ptrs.data(),
                                  full_signature,
@@ -315,6 +441,8 @@ class TritonJITFunctionImpl {
     struct CacheEntry {
       std::string full_signature;
       int device_index = -1;
+      int num_warps = 0;
+      int num_stages = 0;
       KernelPtr kernel = nullptr;
     };
     thread_local static std::unordered_map<const TritonJITFunctionImpl*, CacheEntry> tl_cache;
@@ -323,15 +451,22 @@ class TritonJITFunctionImpl {
     int device_index = Backend::get_device_index();
     KernelPtr cached_kernel = nullptr;
     if (entry.kernel != nullptr && entry.device_index == device_index &&
+        entry.num_warps == static_cast<int>(num_warps) &&
+        entry.num_stages == static_cast<int>(num_stages) &&
         entry.full_signature == full_signature) {
       cached_kernel = entry.kernel;
     }
     if (cached_kernel == nullptr) {
+      CompileOptions copts;
+      copts.num_warps = static_cast<int>(num_warps);
+      copts.num_stages = static_cast<int>(num_stages);
       const TritonKernelImpl<Backend>& kernel =
-          this->get_kernel(full_signature, num_warps, num_stages, device_index);
+          this->get_kernel(full_signature, copts, device_index);
       cached_kernel = &kernel;
       entry.full_signature = full_signature;
       entry.device_index = device_index;
+      entry.num_warps = static_cast<int>(num_warps);
+      entry.num_stages = static_cast<int>(num_stages);
       entry.kernel = cached_kernel;
     }
     cached_kernel->launch_with_signature(
@@ -345,14 +480,16 @@ class TritonJITFunctionImpl {
                unsigned int num_stages,
                int device_index) const {
     Backend::ensure_context();
-    this->get_kernel(full_signature, num_warps, num_stages, device_index);
+    CompileOptions copts;
+    copts.num_warps = static_cast<int>(num_warps);
+    copts.num_stages = static_cast<int>(num_stages);
+    this->get_kernel(full_signature, copts, device_index);
   }
 
  private:
   TritonJITFunctionImpl(std::string_view path, std::string_view name);
   const TritonKernelImpl<Backend>& get_kernel(std::string_view signature,
-                                              int num_warps,
-                                              int num_stages,
+                                              const CompileOptions& opts,
                                               int device_index) const;
 };
 
