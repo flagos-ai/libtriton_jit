@@ -61,9 +61,10 @@ elseif(BACKEND STREQUAL "GCU")
 elseif(BACKEND STREQUAL "HCU")
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch hip::host fmt::fmt-header-only
+      PRIVATE pybind11::embed)
 elseif(BACKEND STREQUAL "KUNLUNXIN")
     target_link_libraries(triton_jit
-      PUBLIC Torch::Torch Kunlunxin::runtime fmt::fmt-header-only
+      PUBLIC Torch::Torch Kunlunxin::cupti Kunlunxin::runtime fmt::fmt-header-only
       PRIVATE pybind11::embed)
 else()
     # CUDA and IX use CUDA driver API

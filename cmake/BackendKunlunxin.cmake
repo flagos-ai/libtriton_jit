@@ -17,11 +17,13 @@ find_path(KUNLUNXIN_RUNTIME_INCLUDE_DIR
         ENV XRE3_HOME
         ENV XPU_HOME
         ENV XPU_SDK_ROOT
+        ${CONDA_ENV_ROOT}/xcudart
         ${CONDA_ENV_ROOT}
     PATH_SUFFIXES include
     PATHS
         /usr/include
         /usr/local/include
+        /usr/local/xpu
 )
 
 find_library(KUNLUNXIN_RUNTIME_LIBRARY
@@ -30,12 +32,16 @@ find_library(KUNLUNXIN_RUNTIME_LIBRARY
         ENV XRE3_HOME
         ENV XPU_HOME
         ENV XPU_SDK_ROOT
+        ${CONDA_ENV_ROOT}/xcudart
         ${CONDA_ENV_ROOT}
     PATH_SUFFIXES so lib lib64
     PATHS
         /usr/lib
         /usr/local/lib
+        /usr/local/xpu
 )
+
+find_package(CUDAToolkit REQUIRED COMPONENTS cupti)
 
 if(KUNLUNXIN_RUNTIME_INCLUDE_DIR)
     message(STATUS "Found Kunlunxin runtime headers: ${KUNLUNXIN_RUNTIME_INCLUDE_DIR}")
@@ -57,6 +63,13 @@ if(NOT TARGET Kunlunxin::runtime)
     set_target_properties(Kunlunxin::runtime PROPERTIES
         IMPORTED_LOCATION "${KUNLUNXIN_RUNTIME_LIBRARY}"
         INTERFACE_INCLUDE_DIRECTORIES "${KUNLUNXIN_RUNTIME_INCLUDE_DIR}"
+    )
+endif()
+
+if(NOT TARGET Kunlunxin::cupti)
+    add_library(Kunlunxin::cupti UNKNOWN IMPORTED)
+    set_target_properties(Kunlunxin::cupti PROPERTIES
+        IMPORTED_LOCATION "${CUDA_cupti_LIBRARY}"
     )
 endif()
 

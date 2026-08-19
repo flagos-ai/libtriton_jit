@@ -22,7 +22,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <dlfcn.h>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -66,14 +65,6 @@ static void ensure_initialized() {
         py::module_::import("torch_xmlir");
       } catch (const py::error_already_set& e) {
         std::cerr << "Warning: Failed to import torch_xmlir: " << e.what() << std::endl;
-      }
-      // torch_xmlir overrides aten PrivateUse1 kernels; re-register the native
-      // XRE3 implementations (exported from xpu_registration.cpp) so they win.
-      {
-        using ReregFn = void (*)();
-        ReregFn fn = reinterpret_cast<ReregFn>(dlsym(RTLD_DEFAULT, "xpu_reregister_kernels"));
-        std::cerr << "[triton_jit] xpu_reregister_kernels via dlsym: " << (fn ? "found" : "NOT FOUND") << std::endl;
-        if (fn) fn();
       }
     }
   });
@@ -140,8 +131,13 @@ const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std:
       for (const auto& kv : opts.extra) {
         extra_dict[py::str(kv.first)] = py::str(kv.second);
       }
-      ans = fn(this->file_path_, this->function_name_, signature, opts.num_warps, opts.num_stages,
-               device_index, extra_dict);
+      ans = fn(this->file_path_,
+               this->function_name_,
+               signature,
+               opts.num_warps,
+               opts.num_stages,
+               device_index,
+               extra_dict);
     } catch (const py::error_already_set& e) {
       std::cerr << "Python exception: " << e.what() << std::endl;
       throw;
@@ -193,7 +189,9 @@ template class triton_jit::TritonJITFunctionImpl<triton_jit::GcuBackend>;
 
 namespace {
 struct GcuLibAutoInit {
-  GcuLibAutoInit() { triton_jit::ensure_initialized(); }
+  GcuLibAutoInit() {
+    triton_jit::ensure_initialized();
+  }
 };
 static GcuLibAutoInit gcu_lib_auto_init_;
 }  // namespace

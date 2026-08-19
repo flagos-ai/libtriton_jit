@@ -5,7 +5,9 @@
 // Uses native xpuLaunchKernel + manually constructed xpu_kernel handle.
 
 #include <xpu/runtime.h>
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -128,18 +130,55 @@ inline std::vector<KunlunxinArgInfo> parse_kunlunxin_signature(const std::string
   return result;
 }
 
+inline std::vector<size_t> parse_kunlunxin_argument_sizes(const std::string& signature) {
+  std::vector<size_t> sizes;
+  size_t begin = 0;
+  while (begin <= signature.size()) {
+    size_t end = signature.find(',', begin);
+    std::string token = signature.substr(begin, end == std::string::npos ? end : end - begin);
+    token.erase(std::remove_if(token.begin(), token.end(), [](unsigned char c) { return std::isspace(c); }),
+                token.end());
+
+    const size_t hint = token.find(':');
+    if (hint != std::string::npos && token.substr(hint + 1) == "1") {
+      token.clear();
+    } else if (hint != std::string::npos) {
+      token.resize(hint);
+    }
+
+    if (!token.empty() && token != "nullopt") {
+      const bool numeric_constant = std::isdigit(static_cast<unsigned char>(token[0])) || token[0] == '-';
+      if (!numeric_constant) {
+        if (token[0] == '*' || token == "i64" || token == "u64" || token == "fp64" || token == "f64") {
+          sizes.push_back(8);
+        } else if (token == "i8" || token == "u8") {
+          sizes.push_back(1);
+        } else if (token == "i16" || token == "u16" || token == "fp16" || token == "bf16") {
+          sizes.push_back(2);
+        } else {
+          sizes.push_back(4);
+        }
+      }
+    }
+
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return sizes;
+}
+
 // ---- Kunlunxin metadata (superset of GpuKernelMeta) ----
 
 struct KunlunxinKernelMetadata {
-  unsigned int shared = 0;       // placeholder; xpu ignores
-  unsigned int xpu_arch = 3;     // 3 = KL3, 4 = KL4, 5 = KL5
+  unsigned int shared = 0;    // placeholder; xpu ignores
+  unsigned int xpu_arch = 3;  // 3 = KL3, 4 = KL4, 5 = KL5
   bool is_sdnn = false;
-  std::string mangled_name;      // metadata["name"] from compiler.py
+  std::string mangled_name;  // metadata["name"] from compiler.py
   uint64_t printf_buf_offset = 0;
 };
 
 inline KunlunxinKernelMetadata load_kunlunxin_metadata(const std::string& dir,
-                                                      const std::string& kernel_name) {
+                                                       const std::string& kernel_name) {
   KunlunxinKernelMetadata meta;
   meta.mangled_name = kernel_name;  // fallback
   std::string path = fmt::format("{}/{}.json", dir, kernel_name);
@@ -160,12 +199,15 @@ inline KunlunxinKernelMetadata load_kunlunxin_metadata(const std::string& dir,
       } else if (a.is_string()) {
         std::string s = a.get<std::string>();
         if (s.size() > 3 && s.rfind("xpu", 0) == 0) {
-          try { meta.xpu_arch = std::stoul(s.substr(3)); } catch (...) {}
+          try {
+            meta.xpu_arch = std::stoul(s.substr(3));
+          } catch (...) {
+          }
         }
       }
     }
     meta.is_sdnn = j.value("is_sdnn", false);
-    meta.printf_buf_offset = j.value("printf_buf_offset", uint64_t{0});
+    meta.printf_buf_offset = j.value("printf_buf_offset", uint64_t {0});
     if (j.contains("name")) {
       meta.mangled_name = j["name"].get<std::string>();
     }
@@ -191,9 +233,12 @@ inline uint32_t kunlunxin_checksum(const char* data, size_t len) {
 // (num_clusters, num_cores) per (arch, is_sdnn)
 inline std::pair<int, int> get_xpu_spec(unsigned int arch, bool is_sdnn) {
   switch (arch) {
-    case 2: return is_sdnn ? std::make_pair(8, 8)  : std::make_pair(8, 64);
-    case 3: return is_sdnn ? std::make_pair(12, 8) : std::make_pair(12, 64);
-    case 4: return is_sdnn ? std::make_pair(6, 8)  : std::make_pair(12, 64);
+    case 2:
+      return is_sdnn ? std::make_pair(8, 8) : std::make_pair(8, 64);
+    case 3:
+      return is_sdnn ? std::make_pair(12, 8) : std::make_pair(12, 64);
+    case 4:
+      return is_sdnn ? std::make_pair(6, 8) : std::make_pair(12, 64);
     default:
       return std::make_pair(12, 64);
   }
@@ -211,11 +256,11 @@ struct KunlunxinBackend {
 
   struct LaunchOptions {
     unsigned int shared_memory = 0;
+    unsigned int xpu_arch = 3;
     int nclusters = 12;
     int ncores = 64;
     std::string kernel_name;  // mangled name
-    std::string signature;
-    size_t num_args = 0;
+    std::vector<size_t> argument_sizes;
   };
 
   struct ModuleData {
@@ -234,14 +279,26 @@ struct KunlunxinBackend {
                                       size_t num_args) {
     LaunchOptions opts;
     opts.shared_memory = shared_mem;
-    opts.signature = sig;
-    opts.num_args = num_args;
+    opts.argument_sizes = parse_kunlunxin_argument_sizes(sig);
+    const size_t signature_args = opts.argument_sizes.size();
+    const bool has_legacy_scratch_slots = num_args == signature_args + 2;
+    if (num_args != signature_args && !has_legacy_scratch_slots) {
+      throw std::runtime_error(
+          fmt::format("Kunlunxin signature/runtime argument mismatch for {}: signature has {} runtime "
+                      "arguments, caller supplied {} (expected {} or {} with two legacy scratch slots)",
+                      name,
+                      signature_args,
+                      num_args,
+                      signature_args,
+                      signature_args + 2));
+    }
     opts.kernel_name = name;
     std::lock_guard<std::mutex> lock(cache_mutex_);
     auto it = module_cache_.find(fmt::format("{}::{}", dir, name));
     if (it != module_cache_.end()) {
       const auto& md = it->second.metadata;
       auto [ncl, ncr] = get_xpu_spec(md.xpu_arch, md.is_sdnn);
+      opts.xpu_arch = md.xpu_arch;
       opts.nclusters = ncl;
       opts.ncores = ncr;
       opts.kernel_name = md.mangled_name;
@@ -264,56 +321,50 @@ struct KunlunxinBackend {
                             const LaunchOptions& opts) {
     if (grid_x == 0 || grid_y == 0 || grid_z == 0) return;
 
-    auto layout = parse_kunlunxin_signature(opts.signature);
-
-    // Keep only entries whose type_enum is known (skip constexpr numeric tokens).
-    std::vector<size_t> kept_indices;
-    kept_indices.reserve(layout.size());
-    for (size_t i = 0; i < layout.size(); ++i) {
-      if (layout[i].type_enum != KLX_PARAM_UNKNOWN) {
-        kept_indices.push_back(i);
-      }
-    }
-    size_t n_runtime = kept_indices.empty() ? opts.num_args : kept_indices.size();
-
-    // Step 1: configure launch (nclusters, ncores, stream)
-    int ret = xpu_launch_config(opts.nclusters, opts.ncores, stream);
+    const uint64_t grid_size = static_cast<uint64_t>(grid_x) * static_cast<uint64_t>(grid_y) * grid_z;
+    const int nclusters = static_cast<int>(std::min(grid_size, static_cast<uint64_t>(opts.nclusters)));
+    int ret = xpu_launch_config(nclusters, opts.ncores, stream);
     if (ret != XPU_SUCCESS) {
       const char* err = xpu_strerror(ret);
-      throw std::runtime_error(
-          fmt::format("xpu_launch_config failed: {} (err={})", err ? err : "?", ret));
+      throw std::runtime_error(fmt::format("xpu_launch_config failed: {} (err={})", err ? err : "?", ret));
     }
 
-    // Step 2: set kernel arguments sequentially.
+    // Set kernel arguments sequentially.
     // xpu_launch_argument_set(ptr, size, offset) copies `size` bytes from *ptr
     // into the XPU parameter block at byte offset `offset`.
     // offset must be 4-byte aligned; size is rounded up to 4 internally.
     size_t offset = 0;
-    for (size_t k = 0; k < n_runtime; ++k) {
-      void* arg_ptr = args[k];   // args[k] points to the argument value
-      size_t byte_sz = 8;        // default: 8 bytes (pointer)
-      if (!kept_indices.empty()) {
-        byte_sz = layout[kept_indices[k]].byte_size;
-      }
-      // Align offset to at least 4 bytes, and to byte_sz for natural alignment.
-      size_t align = std::max(byte_sz, size_t(4));
-      offset = (offset + align - 1) & ~(align - 1);
-      ret = xpu_launch_argument_set(arg_ptr, byte_sz, offset);
+    for (size_t k = 0; k < opts.argument_sizes.size(); ++k) {
+      const size_t byte_sz = opts.argument_sizes[k];
+      const size_t alignment = opts.xpu_arch == 3 && byte_sz == 8 ? 8 : 4;
+      offset = (offset + alignment - 1) & ~(alignment - 1);
+      ret = xpu_launch_argument_set(args[k], byte_sz, offset);
       if (ret != XPU_SUCCESS) {
         const char* err = xpu_strerror(ret);
         throw std::runtime_error(
-            fmt::format("xpu_launch_argument_set failed at arg {}: {} (err={})",
-                        k, err ? err : "?", ret));
+            fmt::format("xpu_launch_argument_set failed at arg {}: {} (err={})", k, err ? err : "?", ret));
       }
       offset += byte_sz;
     }
 
-    // Step 3: launch asynchronously
+    const std::array<unsigned, 3> grid = {grid_x, grid_y, grid_z};
+    for (size_t k = 0; k < grid.size(); ++k) {
+      offset = (offset + 3) & ~size_t(3);
+      ret = xpu_launch_argument_set(&grid[k], sizeof(grid[k]), offset);
+      if (ret != XPU_SUCCESS) {
+        const char* err = xpu_strerror(ret);
+        throw std::runtime_error(fmt::format("xpu_launch_argument_set failed for grid arg {}: {} (err={})",
+                                             k,
+                                             err ? err : "?",
+                                             ret));
+      }
+      offset += sizeof(grid[k]);
+    }
+
     ret = xpu_launch_async(kernel);
     if (ret != XPU_SUCCESS) {
       const char* err = xpu_strerror(ret);
-      throw std::runtime_error(
-          fmt::format("xpu_launch_async failed: {} (err={})", err ? err : "?", ret));
+      throw std::runtime_error(fmt::format("xpu_launch_async failed: {} (err={})", err ? err : "?", ret));
     }
   }
 
@@ -326,8 +377,7 @@ struct KunlunxinBackend {
     int ret = xpu_current_device(&dev);
     if (ret != XPU_SUCCESS) {
       const char* err = xpu_strerror(ret);
-      throw std::runtime_error(
-          fmt::format("xpu_current_device failed: {}", err ? err : "?"));
+      throw std::runtime_error(fmt::format("xpu_current_device failed: {}", err ? err : "?"));
     }
     return dev;
   }
@@ -346,7 +396,10 @@ struct KunlunxinBackend {
     LOG(INFO) << fmt::format(
         "[kunlunxin] loading kernel {} arch={} is_sdnn={} mangled={} "
         "printf_buf_offset=0x{:x}",
-        kernel_name, meta.xpu_arch, meta.is_sdnn, meta.mangled_name,
+        kernel_name,
+        meta.xpu_arch,
+        meta.is_sdnn,
+        meta.mangled_name,
         meta.printf_buf_offset);
 
     std::string bin_path = fmt::format("{}/{}.xpubin", dir, kernel_name);
@@ -394,7 +447,6 @@ struct KunlunxinBackend {
   }
 };
 
-static_assert(BackendPolicy<KunlunxinBackend>,
-              "KunlunxinBackend must satisfy BackendPolicy concept");
+static_assert(BackendPolicy<KunlunxinBackend>, "KunlunxinBackend must satisfy BackendPolicy concept");
 
 }  // namespace triton_jit
