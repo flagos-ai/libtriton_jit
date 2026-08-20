@@ -28,10 +28,12 @@
 namespace triton_jit {
 
 // No xpuLaunchKernel forward declaration needed - we use the lower-level XRE3 API:
-//   xpu_launch_config(nclusters, ncores, stream)
-//   xpu_launch_argument_set(arg_ptr, size, offset)
-//   xpu_launch_async(func)
+//   xpu_launch_argument_set(arg_ptr, size, offset)   // set args first
+//   xpu_launch_config(nclusters, ncores, stream)     // then configure launch
+//   xpu_launch_async(func)                           // then launch
 // which are all exported by libxpurt.so.
+// NOTE: the argument-setting must happen BEFORE xpu_launch_config; the proven
+// P800-passing implementation (klx/p800-xpu-launch) uses this exact order.
 
 // ---- xpu_kernel struct (exact copy of driver.c layout) ----
 
@@ -323,16 +325,16 @@ struct KunlunxinBackend {
 
     const uint64_t grid_size = static_cast<uint64_t>(grid_x) * static_cast<uint64_t>(grid_y) * grid_z;
     const int nclusters = static_cast<int>(std::min(grid_size, static_cast<uint64_t>(opts.nclusters)));
-    int ret = xpu_launch_config(nclusters, opts.ncores, stream);
-    if (ret != XPU_SUCCESS) {
-      const char* err = xpu_strerror(ret);
-      throw std::runtime_error(fmt::format("xpu_launch_config failed: {} (err={})", err ? err : "?", ret));
-    }
+    int ret = 0;
 
     // Set kernel arguments sequentially.
     // xpu_launch_argument_set(ptr, size, offset) copies `size` bytes from *ptr
     // into the XPU parameter block at byte offset `offset`.
     // offset must be 4-byte aligned; size is rounded up to 4 internally.
+    // Arguments (including grid dims) must be set BEFORE xpu_launch_config:
+    // the proven P800-passing implementation writes all parameters first and
+    // only then configures and launches; configuring first leaves the kernel
+    // waiting forever on device.
     size_t offset = 0;
     for (size_t k = 0; k < opts.argument_sizes.size(); ++k) {
       const size_t byte_sz = opts.argument_sizes[k];
@@ -355,10 +357,15 @@ struct KunlunxinBackend {
         const char* err = xpu_strerror(ret);
         throw std::runtime_error(fmt::format("xpu_launch_argument_set failed for grid arg {}: {} (err={})",
                                              k,
-                                             err ? err : "?",
-                                             ret));
+                                             err ? err : "?", ret));
       }
       offset += sizeof(grid[k]);
+    }
+
+    ret = xpu_launch_config(nclusters, opts.ncores, stream);
+    if (ret != XPU_SUCCESS) {
+      const char* err = xpu_strerror(ret);
+      throw std::runtime_error(fmt::format("xpu_launch_config failed: {} (err={})", err ? err : "?", ret));
     }
 
     ret = xpu_launch_async(kernel);

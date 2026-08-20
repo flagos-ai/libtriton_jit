@@ -125,39 +125,23 @@ def max_with_indices_kernel(
     BLOCK_N: tl.constexpr,
 ):
     """Compute max with indices along the last dimension."""
-    pid = tl.program_id(0)
-    workers = tl.num_programs(0)
+    row = tl.program_id(0)
+    max_value = float('-inf')
+    argmax_value = 0
 
-    total_workloads = tl.cdiv(M, BLOCK_M)
-    workloads = tl.cdiv(total_workloads, workers)
+    for start_n in range(0, N, BLOCK_N):
+        n_offset = start_n + tl.arange(0, BLOCK_N)
+        inp_vals = tl.load(inp + row * N + n_offset,
+                           mask=n_offset < N,
+                           other=float('-inf'))
+        local_max = tl.max(inp_vals, axis=0)
+        local_argmax = tl.argmax(inp_vals, axis=0)
+        update = local_max > max_value
+        max_value = tl.where(update, local_max, max_value)
+        argmax_value = tl.where(update, start_n + local_argmax, argmax_value)
 
-    for w in range(workloads):
-        work_id = pid + w * workers
-        m_offset = work_id * BLOCK_M + tl.arange(0, BLOCK_M)
-        row_mask = m_offset < M
-
-        max_values = tl.full([BLOCK_M], value=float('-inf'), dtype=tl.float32)
-        argmax_values = tl.full([BLOCK_M], value=0, dtype=tl.int64)
-
-        for start_n in range(0, N, BLOCK_N):
-            n_offset = start_n + tl.arange(0, BLOCK_N)
-            offset = m_offset[:, None] * N + n_offset[None, :]
-            mask = row_mask[:, None] and (n_offset[None, :] < N)
-            inp_ptrs = inp + offset
-            inp_vals = tl.load(inp_ptrs, mask=mask, other=float('-inf'))
-
-            # Get local max and argmax
-            local_max = tl.max(inp_vals, 1)
-            local_argmax = tl.argmax(inp_vals, 1)
-
-            # Update global max
-            update = local_max > max_values
-            max_values = tl.where(update, local_max, max_values)
-            argmax_values = tl.where(update, start_n + local_argmax, argmax_values)
-
-        # Store results
-        tl.store(out_vals + m_offset, max_values, mask=row_mask)
-        tl.store(out_idx + m_offset, argmax_values, mask=row_mask)
+    tl.store(out_vals + row, max_value, mask=row < M)
+    tl.store(out_idx + row, argmax_value, mask=row < M)
 
 
 def dim_compress(inp, dims):

@@ -123,32 +123,27 @@ def rotary_embedding_kernel(
     BLOCK_D: tl.constexpr,
 ):
     """Rotary position embedding kernel (NPU-compatible)."""
-    token_index = tl.program_id(0)
-    token_range = token_index * BLOCK_N + tl.arange(0, BLOCK_N)
-    head_index = tl.program_id(1)
-    head_range = head_index * BLOCK_H + tl.arange(0, BLOCK_H)
+    token = tl.program_id(0)
+    head = tl.program_id(1)
+    dim = tl.arange(0, BLOCK_D // 2)
+    valid = (token < num_tokens) & (head < num_heads)
 
-    # Standard (non-interleaved) rotary embedding
-    dim_range_x = tl.arange(0, BLOCK_D // 2)
-    dim_range_y = tl.arange(BLOCK_D // 2, BLOCK_D)
+    state_base = token * stride_state_n + head * stride_state_h
+    state_x_offset = state_base + dim * stride_state_d
+    state_y_offset = state_base + (dim + BLOCK_D // 2) * stride_state_d
+    cos_offset = token * stride_cos_n + dim * stride_cos_d
 
-    rotary_embedding_rw_kernel(
-        state_out,
-        state,
-        cos,
-        sin,
-        stride_state_n,
-        stride_state_h,
-        stride_state_d,
-        stride_cos_n,
-        stride_cos_d,
-        num_tokens,
-        num_heads,
-        token_range,
-        head_range,
-        dim_range_x,
-        dim_range_y,
-    )
+    state_x = tl.load(state + state_x_offset, mask=valid, other=0.0)
+    state_y = tl.load(state + state_y_offset, mask=valid, other=0.0)
+    cos_loaded = tl.load(cos + cos_offset, mask=valid, other=0.0).to(tl.float32)
+    sin_loaded = tl.load(sin + cos_offset, mask=valid, other=0.0).to(tl.float32)
+
+    tl.store(state_out + state_x_offset,
+             state_x * cos_loaded - state_y * sin_loaded,
+             mask=valid)
+    tl.store(state_out + state_y_offset,
+             state_x * sin_loaded + state_y * cos_loaded,
+             mask=valid)
 
 
 def apply_rotary_pos_emb(

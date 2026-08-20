@@ -62,11 +62,11 @@ std::tuple<at::Tensor, at::Tensor> max_dim(const at::Tensor& self, int64_t dim, 
   const TritonJITFunction& f =
       TritonJITFunction::get_instance(std::string("max.py"), "max_with_indices_kernel");
 
-  constexpr int64_t BLOCK_M = 4;
-  constexpr int64_t BLOCK_N = 512;
-  constexpr int num_warps = 8;
+  constexpr int64_t BLOCK_M = 1;
+  constexpr int64_t BLOCK_N = 256;
+  constexpr int num_warps = 4;
   constexpr int num_stages = 1;
-  const unsigned int num_blocks = (M + BLOCK_M - 1) / BLOCK_M;
+  const unsigned int num_blocks = M;
 
   c10::DeviceGuard guard(self.device());
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(permuted);
