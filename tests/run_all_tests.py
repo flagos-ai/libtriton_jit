@@ -35,10 +35,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any
-import time
+from typing import Any, Dict, List
 
 
 class TestRunner:
@@ -139,7 +139,9 @@ class TestRunner:
 
         return result
 
-    def run_all_tests(self, categories: List[str] = None, operators: List[str] = None) -> List[Dict[str, Any]]:
+    def run_all_tests(
+        self, categories: List[str] = None, operators: List[str] = None
+    ) -> List[Dict[str, Any]]:
         """Run all tests or a subset."""
         if categories is None:
             categories = self.OPERATOR_CATEGORIES
@@ -165,7 +167,7 @@ class TestRunner:
                 if result["passed"]:
                     print(f"PASSED ({result['duration_s']:.2f}s)")
                 else:
-                    print(f"FAILED")
+                    print("FAILED")
                     if result["error"]:
                         print(f"  Error: {result['error'][:200]}")
 
@@ -234,7 +236,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run Triton JIT operator tests")
     parser.add_argument(
         "--backend",
-        choices=["CUDA", "MUSA", "NPU", "IX", "MLU", "GCU"],
+        choices=["CUDA", "MUSA", "NPU", "IX", "MLU", "GCU", "KUNLUNXIN"],
         default="CUDA",
         help="Backend to test",
     )

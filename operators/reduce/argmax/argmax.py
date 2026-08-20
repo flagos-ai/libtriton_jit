@@ -78,34 +78,22 @@ def argmax_dim_kernel(
     BLOCK_N: tl.constexpr,
 ):
     """Compute argmax along a specific dimension."""
-    # set offset
-    pid_m = tl.program_id(0)
+    row = tl.program_id(0)
+    max_value = float('-inf')
+    argmax_value = 0
 
-    for pid_k in range(K):
-        m_offset = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    for start_n in range(0, N, BLOCK_N):
+        n_offset = start_n + tl.arange(0, BLOCK_N)
+        inp_vals = tl.load(inp + row * N + n_offset,
+                           mask=n_offset < N,
+                           other=float('-inf'))
+        local_max = tl.max(inp_vals, axis=0)
+        local_argmax = tl.argmax(inp_vals, axis=0)
+        update = local_max > max_value
+        max_value = tl.where(update, local_max, max_value)
+        argmax_value = tl.where(update, start_n + local_argmax, argmax_value)
 
-        max_values = tl.full([BLOCK_M], dtype=tl.float32, value=float('-inf'))
-        argmax_values = tl.full([BLOCK_M], dtype=tl.int64, value=0)
-
-        for start_n in range(0, N, BLOCK_N):
-            n_offset = start_n + tl.arange(0, BLOCK_N)
-            offset = m_offset[:, None] * N * K + n_offset[None, :] * K + pid_k
-            mask = (m_offset[:, None] < M) and (n_offset[None, :] < N)
-            inp_ptrs = inp + offset
-            inp_vals = tl.load(inp_ptrs, mask=mask, other=float('-inf'))
-
-            local_max = tl.max(inp_vals, 1)
-            local_argmax = tl.argmax(inp_vals, 1)
-
-            # if return indices is not supported, call a tl.argmax in addition
-            update = local_max > max_values
-            max_values = tl.where(update, local_max, max_values)
-            argmax_values = tl.where(update, start_n + local_argmax, argmax_values)
-
-        offset_index = m_offset * K + pid_k
-        out_index_ptrs = out_index + offset_index
-        mask1 = m_offset < M
-        tl.store(out_index_ptrs, argmax_values, mask=mask1)
+    tl.store(out_index + row, argmax_value, mask=row < M)
 
 
 def argmax(inp: torch.Tensor, dim: int = None, keepdim: bool = False) -> torch.Tensor:

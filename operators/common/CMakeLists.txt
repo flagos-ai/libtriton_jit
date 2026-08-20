@@ -32,6 +32,11 @@ target_include_directories(triton_test_framework
         ${PROJECT_SOURCE_DIR}/include
 )
 
+if(BACKEND STREQUAL "KUNLUNXIN")
+    target_include_directories(triton_test_framework PRIVATE ${KUNLUNXIN_RUNTIME_INCLUDE_DIR})
+    target_include_directories(triton_test_framework PUBLIC ${Python_INCLUDE_DIRS})
+endif()
+
 target_link_libraries(triton_test_framework
     PUBLIC
         Torch::Torch
@@ -52,6 +57,10 @@ elseif(BACKEND STREQUAL "MLU")
 elseif(BACKEND STREQUAL "GCU")
     target_link_gcu_libraries(triton_test_framework)
     target_link_libraries(triton_test_framework PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "KUNLUNXIN")
+    target_link_libraries(triton_test_framework
+        PUBLIC Kunlunxin::runtime Kunlunxin::cupti
+        PRIVATE pybind11::embed)
 elseif(BACKEND STREQUAL "HCU")
     target_link_hcu_libraries(triton_test_framework)
     target_link_libraries(triton_test_framework PRIVATE pybind11::embed)
