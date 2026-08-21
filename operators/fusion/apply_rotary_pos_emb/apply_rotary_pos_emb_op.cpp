@@ -74,9 +74,10 @@ std::tuple<at::Tensor, at::Tensor> apply_rotary_pos_emb(const at::Tensor& q,
   c10::DeviceGuard guard(q.device());
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(q);
 
-  auto grid_q_x = num_tokens;
-  auto grid_q_y = num_heads_q;
-  auto grid_k_y = num_heads_k;
+  // Grid: (cdiv(num_tokens, BLOCK_N), cdiv(num_heads, BLOCK_H))
+  auto grid_q_x = (num_tokens + cfg.BLOCK_N - 1) / cfg.BLOCK_N;
+  auto grid_q_y = (num_heads_q + cfg.BLOCK_H - 1) / cfg.BLOCK_H;
+  auto grid_k_y = (num_heads_k + cfg.BLOCK_H - 1) / cfg.BLOCK_H;
 
   // Launch for Q
   f(stream,

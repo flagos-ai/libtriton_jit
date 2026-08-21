@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -334,6 +335,24 @@ class TritonJITFunctionImpl {
   /// Global registry of all TritonJITFunctionImpl instances
   static std::unordered_map<std::string, std::unique_ptr<TritonJITFunctionImpl<Backend>>> functions_;
 
+  /// Per-backend kernel file resolution: in KUNLUNXIN builds, prefer a
+  /// device-tuned "<base>_kunlunxin.py" variant when it exists next to the
+  /// generic kernel, leaving other backends on the shared source file.
+  static std::string resolve_kernel_path(std::string_view path) {
+#ifdef BACKEND_KUNLUNXIN
+    std::string s(path);
+    if (s.size() > 3 && s.compare(s.size() - 3, 3, ".py") == 0) {
+      std::string alt = s.substr(0, s.size() - 3) + "_kunlunxin.py";
+      if (std::filesystem::exists(alt)) {
+        return alt;
+      }
+    }
+#else
+    (void)path;
+#endif
+    return std::string(path);
+  }
+
  public:
   static TritonJITFunctionImpl& get_instance(std::string_view path, std::string_view name) {
     std::string key = fmt::format("{}:{}", path, name);
@@ -341,7 +360,8 @@ class TritonJITFunctionImpl {
     auto it = functions_.find(key);
     if (it == functions_.end()) {
       // Use new instead of make_unique since constructor is private
-      auto ptr = std::unique_ptr<TritonJITFunctionImpl>(new TritonJITFunctionImpl(path, name));
+      auto ptr = std::unique_ptr<TritonJITFunctionImpl>(
+          new TritonJITFunctionImpl(resolve_kernel_path(path), name));
       functions_.emplace(key, std::move(ptr));
     }
 
