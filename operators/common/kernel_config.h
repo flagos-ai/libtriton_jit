@@ -105,8 +105,34 @@ inline constexpr RotaryConfig default_rotary_config() {
   return {4, 4, 1, 1};
 #elif defined(BACKEND_MLU)
   return {32, 4, 1, 1};
+#elif defined(BACKEND_KUNLUNXIN)
+  return {1, 1, 4, 1};
 #else
   return {8, 4, 4, 1};
+#endif
+}
+
+// ---- Reduce config (max / argmax) ----
+struct ReduceConfig {
+  int64_t BLOCK_M;
+  int64_t BLOCK_N;
+  int num_warps;
+  int num_stages;
+};
+
+inline constexpr ReduceConfig default_max_config() {
+#if defined(BACKEND_KUNLUNXIN)
+  return {1, 256, 4, 1};
+#else
+  return {4, 512, 8, 1};
+#endif
+}
+
+inline constexpr ReduceConfig default_argmax_config() {
+#if defined(BACKEND_KUNLUNXIN)
+  return {1, 256, 4, 1};
+#else
+  return {4, 512, 8, 1};
 #endif
 }
 

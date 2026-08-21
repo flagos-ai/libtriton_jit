@@ -89,7 +89,10 @@ add_custom_target(copy_reduce_max_python ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/max/max.py
             ${CMAKE_CURRENT_BINARY_DIR}/max/max.py
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/max/max.py
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/max/max_kunlunxin.py
+            ${CMAKE_CURRENT_BINARY_DIR}/max/max_kunlunxin.py
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/max/max.py ${CMAKE_CURRENT_SOURCE_DIR}/max/max_kunlunxin.py
 )
 
 add_library(max_op SHARED max/max_op.cpp)
@@ -118,7 +121,10 @@ add_custom_target(copy_reduce_argmax_python ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/argmax/argmax.py
             ${CMAKE_CURRENT_BINARY_DIR}/argmax/argmax.py
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/argmax/argmax.py
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/argmax/argmax_kunlunxin.py
+            ${CMAKE_CURRENT_BINARY_DIR}/argmax/argmax_kunlunxin.py
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/argmax/argmax.py ${CMAKE_CURRENT_SOURCE_DIR}/argmax/argmax_kunlunxin.py
 )
 
 add_library(argmax_op SHARED argmax/argmax_op.cpp)

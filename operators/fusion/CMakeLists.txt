@@ -54,7 +54,10 @@ add_custom_target(copy_fusion_apply_rotary_pos_emb_python ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/apply_rotary_pos_emb/apply_rotary_pos_emb.py
             ${CMAKE_CURRENT_BINARY_DIR}/apply_rotary_pos_emb/apply_rotary_pos_emb.py
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/apply_rotary_pos_emb/apply_rotary_pos_emb.py
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/apply_rotary_pos_emb/apply_rotary_pos_emb_kunlunxin.py
+            ${CMAKE_CURRENT_BINARY_DIR}/apply_rotary_pos_emb/apply_rotary_pos_emb_kunlunxin.py
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/apply_rotary_pos_emb/apply_rotary_pos_emb.py ${CMAKE_CURRENT_SOURCE_DIR}/apply_rotary_pos_emb/apply_rotary_pos_emb_kunlunxin.py
 )
 
 add_library(apply_rotary_pos_emb_op SHARED apply_rotary_pos_emb/apply_rotary_pos_emb_op.cpp)
