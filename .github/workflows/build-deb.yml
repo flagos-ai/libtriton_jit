@@ -45,8 +45,18 @@ jobs:
           # container): ubuntu22.04 + cuda12.8 + python3.12. A 22.04
           # binary also runs on 24.04 (glibc backward-compat); the
           # reverse does not hold.
-          - base_image: "nvidia/cuda:12.8.0-devel-ubuntu22.04"
+          - vendor: nvidia
+            base_image: "nvidia/cuda:12.8.0-devel-ubuntu22.04"
             label: "ubuntu2204-cuda1280"
+          # Other vendors are ready in the packaging (source supports the
+          # MUSA/MACA backends); enable each once a base image carrying the
+          # vendor SDK + matching torch is available.
+          # - vendor: metax     # -> CMake backend MACA
+          #   base_image: "<metax maca-sdk base image>"
+          #   label: "ubuntu2204-maca3720"
+          # - vendor: mthreads  # -> CMake backend MUSA
+          #   base_image: "<moore-threads musa-toolkit base image>"
+          #   label: "ubuntu2204-musa436"
 
     steps:
       - name: Checkout repository
@@ -59,6 +69,7 @@ jobs:
         run: |
           cd packaging/debian/build-helpers
           ./build-libtriton-jit.sh \
+            --vendor "${{ matrix.vendor }}" \
             --base-image "${{ matrix.base_image }}" \
             --output-dir "${{ github.workspace }}/output"
 

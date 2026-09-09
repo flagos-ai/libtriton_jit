@@ -41,8 +41,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - base_image: "nvidia/cuda:12.6.0-devel-rockylinux9"
+          - vendor: nvidia
+            base_image: "nvidia/cuda:12.6.0-devel-rockylinux9"
             label: "rocky9-cuda1260"
+          # Other vendors are ready in the packaging (source supports the
+          # MUSA/MACA backends); enable each once a base image carrying the
+          # vendor SDK + matching torch is available.
+          # - vendor: metax     # -> CMake backend MACA
+          #   base_image: "<metax maca-sdk base image>"
+          #   label: "oe2403-maca3720"
+          # - vendor: mthreads  # -> CMake backend MUSA
+          #   base_image: "<moore-threads musa-toolkit base image>"
+          #   label: "oe2403-musa436"
 
     steps:
       - name: Checkout repository
@@ -55,6 +65,7 @@ jobs:
         run: |
           cd packaging/rpm
           ./build-rpm.sh \
+            --vendor "${{ matrix.vendor }}" \
             --base-image "${{ matrix.base_image }}" \
             --output-dir "${{ github.workspace }}/output"
 

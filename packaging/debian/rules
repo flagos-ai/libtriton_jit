@@ -9,6 +9,21 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 DEB_BUILD_OPTIONS ?= parallel=$(shell nproc)
 export DEB_BUILD_OPTIONS
 
+# Target backend for the C++ runtime (CMake -DBACKEND). Defaults to CUDA so
+# an unparameterized build keeps working; the packaging renderer / build
+# container overrides it per vendor (e.g. MUSA for Moore Threads, MACA for
+# MetaX). Accepted values match CMakeLists.txt's BACKEND policy list.
+DEB_TRITON_BACKEND ?= CUDA
+
+# libtriton_jit links to PyTorch and the accelerator driver supplied by the
+# selected vendor environment. Make those private libraries discoverable so
+# dpkg-shlibdeps can still calculate dependencies for distro-owned libraries.
+TORCH_LIBRARY_DIR := $(shell python3 -c "import importlib.util, os; s = importlib.util.find_spec('torch'); print(os.path.join(os.path.dirname(s.origin), 'lib'))")
+CUDA_COMPAT_LIBRARY := $(shell readlink -f /usr/local/cuda/compat/libcuda.so.1 2>/dev/null)
+CUDA_COMPAT_PACKAGE := $(shell test -n "$(CUDA_COMPAT_LIBRARY)" && dpkg-query -S "$(CUDA_COMPAT_LIBRARY)" 2>/dev/null | cut -d: -f1 | head -1)
+DEB_PRIVATE_LIBRARY_DIRS ?= $(TORCH_LIBRARY_DIR):/usr/local/cuda/compat:/usr/local/cuda/lib64/stubs
+DEB_SHLIBDEPS_EXCLUDE_PACKAGES ?= $(CUDA_COMPAT_PACKAGE)
+
 %:
 	dh $@
 
@@ -16,10 +31,11 @@ override_dh_auto_configure:
 	dh_auto_configure --buildsystem=cmake -- \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX=/usr \
-		-DFETCHCONTENT_FULLY_DISCONNECTED=OFF \
+		-DBACKEND=$(DEB_TRITON_BACKEND) \
+		-DFETCHCONTENT_FULLY_DISCONNECTED=ON \
 		-DFETCHCONTENT_QUIET=OFF \
-		-DTRITON_JIT_USE_EXTERNAL_JSON=OFF \
-		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
+		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
+		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
 		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
 		-DTRITON_JIT_BUILD_OPERATORS=OFF \
 		-DTRITON_JIT_INSTALL=ON
@@ -37,8 +53,11 @@ override_dh_auto_test:
 	@echo "Skipping tests"
 
 override_dh_shlibdeps:
-	# Ignore missing CUDA/vendor library dependencies
-	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info || true
+	# PyTorch wheels have no Debian shlibs metadata. Ignore those entries and
+	# the vendor driver package, while retaining libc/libstdc++ dependencies.
+	dh_shlibdeps -l$(DEB_PRIVATE_LIBRARY_DIRS) -- \
+		--ignore-missing-info \
+		$(addprefix -x,$(DEB_SHLIBDEPS_EXCLUDE_PACKAGES))
 
 override_dh_dwz:
 	# Skip dwz optimization - it fails after patchelf modifications

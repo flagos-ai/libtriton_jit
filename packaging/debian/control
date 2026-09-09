@@ -4,9 +4,11 @@ Priority: optional
 Maintainer: The FlagOS Contributors <contact@flagos.io>
 Build-Depends: debhelper-compat (= 13),
                cmake,
+               libfmt-dev (>= 8.1.1),
                ninja-build,
+               nlohmann-json3-dev (>= 3.10.5),
                patchelf,
-               python3-dev
+               python3.12-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/flagos-ai/libtriton_jit
 Vcs-Browser: https://github.com/flagos-ai/libtriton_jit
@@ -16,17 +18,19 @@ X-Build-Environment: This package is designed to be built in a CUDA container
  environment that provides the necessary SDK and Python packages:
  .
  - CUDA toolkit (>= 12.8) from nvidia/cuda base image
- - PyTorch (>= 2.7.0) and Triton (>= 3.10.0) via pip
+ - PyTorch 2.10.0+cu128 and Triton 3.6.0 via pip
  - pybind11 via pip
- - nlohmann-json 3.11.3 and fmt 10.2.1 are downloaded via CMake
-   FetchContent at build time (the distro versions are too old)
+ - fmt from the distro libfmt-dev (>= 8.1.1)
+ - nlohmann-json from the distro nlohmann-json3-dev (>= 3.10.5)
  .
- The Build-Depends listed above are for the Debian packaging tools only.
- CUDA and Python dependencies are provided by the container environment.
+ CUDA and Python dependencies are provided by the container environment;
+ the remaining build dependencies are declared above.
 
 Package: libtriton-jit-nvidia
 Architecture: amd64 arm64
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         libpython3.12 (>= 3.12)
 Description: Triton JIT runtime library
  libtriton_jit is a C++ library providing Triton JIT runtime functionality.
  It enables just-in-time compilation of Triton kernels for GPU acceleration.
@@ -37,8 +41,8 @@ Package: libtriton-jit-nvidia-dev
 Section: libdevel
 Architecture: amd64 arm64
 Depends: ${misc:Depends},
-         libtriton-jit-nvidia (= ${binary:Version})
-Conflicts: libfmt-dev
+         libtriton-jit-nvidia (= ${binary:Version}),
+         libfmt-dev (>= 8.1.1)
 Description: Triton JIT runtime library - development files
  libtriton_jit is a C++ library providing Triton JIT runtime functionality.
  It enables just-in-time compilation of Triton kernels for GPU acceleration.
