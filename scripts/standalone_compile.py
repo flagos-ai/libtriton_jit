@@ -684,7 +684,10 @@ def _compile_a_kernel(
             f"[NPU] Generated arg_layout with {len(arg_layout)} runtime args: {arg_layout}"
         )
 
-    # For MTGPU backend: Use official mtgpu.translate_llvmir_to_mubin() for compilation
+    # For MTGPU backend: use mtgpu.translate_llvmir_to_mubin() to emit a
+    # .mubin when the loaded Triton exposes it. FlagTree 3.6 (mthreads
+    # backend) already produces the .mubin inside triton.compile, so this is
+    # only a fallback for older mthreads Triton plugin versions.
     elif backend == "MTGPU":
         import shutil
 
@@ -693,44 +696,49 @@ def _compile_a_kernel(
         except ImportError:
             from triton._C.libtriton import mthreads as mtgpu
 
-        kernel_name = fn.__name__
-        llir_path = Path(cache_dir) / f"{kernel_name}.llir"
+        if not hasattr(mtgpu, "translate_llvmir_to_mubin"):
+            # FlagTree >= 3.6 / mthreads backend emits the .mubin directly
+            # during triton.compile; nothing to do here.
+            pass
+        else:
+            kernel_name = fn.__name__
+            llir_path = Path(cache_dir) / f"{kernel_name}.llir"
 
-        if llir_path.exists():
-            try:
-                with open(llir_path, "r") as f:
-                    llir_content = f.read()
+            if llir_path.exists():
+                try:
+                    with open(llir_path, "r") as f:
+                        llir_content = f.read()
 
-                # Compilation options (from official Triton MUSA backend compiler.py)
-                opt_option = "-mtgpu-enable-const-calc=1 -mtgpu-tiny-offset-hint=1 -mtgpu-alloc-shared-memory-from-zero=1"
+                    # Compilation options (from official Triton MUSA backend compiler.py)
+                    opt_option = "-mtgpu-enable-const-calc=1 -mtgpu-tiny-offset-hint=1 -mtgpu-alloc-shared-memory-from-zero=1"
 
-                # Get capability from target (default to 22 for S5000)
-                capability = getattr(target, "arch", 22)
-                if isinstance(capability, tuple):
-                    capability = capability[0] * 10 + capability[1]
+                    # Get capability from target (default to 22 for S5000)
+                    capability = getattr(target, "arch", 22)
+                    if isinstance(capability, tuple):
+                        capability = capability[0] * 10 + capability[1]
 
-                # Use official compilation function (same as Triton MUSA backend)
-                asm_str, mubin_tmp_path = mtgpu.translate_llvmir_to_mubin(
-                    llir_content, opt_option, capability, 0
-                )
+                    # Use official compilation function (same as Triton MUSA backend)
+                    asm_str, mubin_tmp_path = mtgpu.translate_llvmir_to_mubin(
+                        llir_content, opt_option, capability, 0
+                    )
 
-                # Copy mubin to cache directory
-                mubin_path = Path(cache_dir) / f"{kernel_name}.mubin"
-                shutil.copy2(mubin_tmp_path, mubin_path)
+                    # Copy mubin to cache directory
+                    mubin_path = Path(cache_dir) / f"{kernel_name}.mubin"
+                    shutil.copy2(mubin_tmp_path, mubin_path)
 
-                # Optionally save ASM for debugging
-                if os.environ.get("MUSA_ASM_ENABLE_DUMP", "0") == "1":
-                    asm_path = Path(cache_dir) / f"{kernel_name}.asm"
-                    with open(asm_path, "w") as f:
-                        f.write(asm_str)
+                    # Optionally save ASM for debugging
+                    if os.environ.get("MUSA_ASM_ENABLE_DUMP", "0") == "1":
+                        asm_path = Path(cache_dir) / f"{kernel_name}.asm"
+                        with open(asm_path, "w") as f:
+                            f.write(asm_str)
 
-            except Exception as e:
-                import sys
-                import traceback
+                except Exception as e:
+                    import sys
+                    import traceback
 
-                sys.stderr.write(
-                    f"[MTGPU] Compilation failed: {e}\n{traceback.format_exc()}\n"
-                )
+                    sys.stderr.write(
+                        f"[MTGPU] Compilation failed: {e}\n{traceback.format_exc()}\n"
+                    )
 
     return cache_dir
 
