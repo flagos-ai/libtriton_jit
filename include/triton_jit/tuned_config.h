@@ -163,6 +163,9 @@ class TunedKernelTable {
   std::vector<uint32_t> buckets_;  // hash -> first entry index
   TunedKernelInfo info_;
   std::string storage_id_;
+  struct OnlineStorage;
+  std::shared_ptr<OnlineStorage> online_;
+  std::shared_ptr<const TunedKernelTable> offline_;
   void build_index();
   uint64_t hash_key(const int64_t* dims, const char* const* dtypes) const noexcept;
 };
@@ -201,11 +204,57 @@ class TunedTable {
   // Hot path. nullptr when no table is bound to the device, the kernel is
   // unknown, or the key has no row.
   const TunedConfig* find(std::string_view kernel_id, int device_index, TuneKeyView key) const noexcept;
+  // Uses the installed resolver's source binding without entering Python.
+  const TunedConfig* find_for_context(std::string_view kernel_id,
+                                      int device_index,
+                                      TuneKeyView key,
+                                      const void* context) const;
   // Handle for callers that want to skip the kernel lookup on every launch.
   const TunedKernelTable* kernel(std::string_view kernel_id, int device_index) const noexcept;
 
   std::vector<TunedKernelInfo> kernels(int device_index) const;
 
+  // ---- optional online layer -------------------------------------------
+  // What a resolver hands back for a key it tuned: the configuration plus
+  // the key columns (with their strategies) so the runtime can store the
+  // entry under the normalised key and answer the next find() itself.
+  struct ResolvedEntry {
+    TunedConfig config;
+    std::vector<std::pair<std::string, KeyStrategy>> key_columns;
+    std::string cache_namespace;
+  };
+  // Called on a resolve() miss, outside every runtime lock and never while
+  // frozen. `context` is whatever the caller of resolve() passed (typically
+  // its argument pack, so a Python-backed resolver can benchmark with the
+  // real tensors); the runtime never dereferences it. Returning nullopt
+  // means "no configuration for this key"; the miss is not cached and the
+  // next resolve() asks again. Exceptions propagate to every caller waiting
+  // on that key.
+  struct Resolver
+      : std::function<std::optional<ResolvedEntry>(std::string_view, int, TuneKeyView, const void*)> {
+    using Function =
+        std::function<std::optional<ResolvedEntry>(std::string_view, int, TuneKeyView, const void*)>;
+    using Function::Function;
+    // Optional adapter hooks. identity must not enter Python. wait is where a
+    // Python-facing adapter releases the GIL, including for non-owner callers.
+    std::function<std::string(std::string_view, const void*)> identity;
+    std::function<const TunedConfig*(std::shared_future<const TunedConfig*>&)> wait;
+    std::function<std::optional<ResolvedEntry>(std::string_view, int, TuneKeyView, const void*, void*)>
+        with_stream;
+  };
+  void set_resolver(Resolver resolver);
+  bool has_resolver() const noexcept;
+
+  // find(), then on a miss ask the resolver once per (kernel, device, key):
+  // concurrent callers for the same key wait for the first one's answer.
+  // Throws FrozenMissError before touching the resolver if the runtime is
+  // frozen or `stream` is being captured. nullptr when there is no resolver
+  // or the resolver declined.
+  const TunedConfig* resolve(std::string_view kernel_id,
+                             int device_index,
+                             TuneKeyView key,
+                             const void* context = nullptr,
+                             void* stream = nullptr);
   // Drops every table. Unlike load(), this must not race with find()/resolve(): it is
   // meant for tests and process teardown.
   void clear();
@@ -224,7 +273,15 @@ class TunedTable {
   // one. Caller must not hold load_mu_.
   void publish(int device_index, std::shared_ptr<const TunedKernelTable> table);
   void publish_locked(int device_index, std::shared_ptr<const TunedKernelTable> table);
+  const TunedConfig* insert_resolved(std::string_view kernel_id,
+                                     std::string_view storage_id,
+                                     int device_index,
+                                     TuneKeyView raw_key,
+                                     const ResolvedEntry& resolved);
 
+  std::shared_ptr<const Resolver> resolver_;
+  std::mutex resolve_mu_;
+  std::unordered_map<std::string, std::shared_future<const TunedConfig*>> inflight_;
 };
 
 }  // namespace triton_jit

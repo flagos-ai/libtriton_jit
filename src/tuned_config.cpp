@@ -32,6 +32,7 @@
 #include <unordered_set>
 
 #include "nlohmann/json.hpp"
+#include "triton_jit/freeze.h"
 
 #if defined(BACKEND_CUDA) || defined(BACKEND_IX)
 #include <cuda.h>
@@ -438,10 +439,23 @@ uint64_t TunedKernelTable::hash_key(const int64_t* dims, const char* const* dtyp
   return hash;
 }
 
+// Append-only online nodes have stable addresses. Readers use acquire loads;
+// insert_resolved serializes writers. A cached table handle sees later online
+// inserts, while its info() describes the publication at which it was obtained.
+struct TunedKernelTable::OnlineStorage {
+  struct Node {
+    Entry entry;
+    const Node* next = nullptr;
+  };
+  static constexpr size_t kBuckets = 1024;
+  std::atomic<const Node*> buckets[kBuckets] {};
+  std::vector<std::unique_ptr<Node>> owned;
+};
+
 std::string scoped_kernel_id(std::string_view kernel_id, std::string_view cache_namespace) {
   if (cache_namespace.empty()) return std::string(kernel_id);
-  return "@" + std::to_string(cache_namespace.size()) + ":" +
-         std::string(cache_namespace) + ":" + std::string(kernel_id);
+  return "@" + std::to_string(cache_namespace.size()) + ":" + std::string(cache_namespace) + ":" +
+         std::string(kernel_id);
 }
 
 void TunedKernelTable::build_index() {
@@ -485,6 +499,12 @@ const TunedConfig* TunedKernelTable::find(TuneKeyView key) const noexcept {
     }
     return equal;
   };
+  if (online_) {
+    auto* node = online_->buckets[hash & (OnlineStorage::kBuckets - 1)].load(std::memory_order_acquire);
+    for (; node; node = node->next)
+      if (matches(node->entry)) return &node->entry.config;
+  }
+  if (offline_) return offline_->find(key);
   if (entries_.empty()) return nullptr;
   uint32_t index = buckets_[hash & (buckets_.size() - 1)];
   while (index != UINT32_MAX) {
@@ -537,7 +557,8 @@ TunedTable::LoadReport TunedTable::load(const std::filesystem::path& path,
     fail(path, "top level is not an object");
   }
   const auto version_it = root.find("format_version");
-  if (version_it == root.end() || !version_it->is_number_integer() || (version_it->get<int>() != 1 && version_it->get<int>() != 2)) {
+  if (version_it == root.end() || !version_it->is_number_integer() ||
+      (version_it->get<int>() != 1 && version_it->get<int>() != 2)) {
     fail(path, "unsupported or missing format_version (expected 1 or 2)");
   }
   const BackendFingerprint table_fp = parse_fingerprint(path, root);
@@ -565,8 +586,7 @@ TunedTable::LoadReport TunedTable::load(const std::filesystem::path& path,
     if (version_it->get<int>() == 1 && !info.cache_namespace.empty())
       fail(path, context + ": cache_namespace requires format_version 2");
     table->storage_id_ = scoped_kernel_id(info.kernel_id, info.cache_namespace);
-    if (!identities.insert(table->storage_id_).second)
-      fail(path, context + ": duplicate kernel identity");
+    if (!identities.insert(table->storage_id_).second) fail(path, context + ": duplicate kernel identity");
     info.op_name = optional_string(kernel_json, "op_name");
     info.config_table_name = optional_string(kernel_json, "config_table_name");
     info.source_sha256 = optional_string(kernel_json, "source_sha256");
@@ -799,6 +819,184 @@ void TunedTable::clear() {
   std::lock_guard<std::mutex> lock(load_mu_);
   snap_.store(nullptr, std::memory_order_release);
   history_.clear();
+}
+
+// ----------------------------------------------------------------------------
+// Online resolver
+
+void TunedTable::set_resolver(Resolver resolver) {
+  auto next =
+      resolver ? std::make_shared<const Resolver>(std::move(resolver)) : std::shared_ptr<const Resolver>();
+  std::atomic_store_explicit(&resolver_, std::move(next), std::memory_order_release);
+}
+
+bool TunedTable::has_resolver() const noexcept {
+  return std::atomic_load_explicit(&resolver_, std::memory_order_acquire) != nullptr;
+}
+
+namespace {
+
+  std::string inflight_key(std::string_view kernel_id, int device_index, TuneKeyView key) {
+    std::string text(kernel_id);
+    text += '@';
+    text += std::to_string(device_index);
+    for (size_t i = 0; i < key.ndims; ++i) {
+      text += ',';
+      text += std::to_string(key.dims[i]);
+    }
+    for (size_t i = 0; i < key.ndtypes; ++i) {
+      text += ',';
+      text += key.dtypes[i] == nullptr ? "" : key.dtypes[i];
+    }
+    return text;
+  }
+
+}  // namespace
+
+const TunedConfig* TunedTable::insert_resolved(std::string_view kernel_id,
+                                               std::string_view storage_id,
+                                               int device_index,
+                                               TuneKeyView raw_key,
+                                               const ResolvedEntry& resolved) {
+  if (resolved.key_columns.size() != raw_key.ndims || raw_key.ndims > 32) {
+    throw std::runtime_error("tuned resolver returned an incompatible key width");
+  }
+  if (!resolved.cache_namespace.empty() &&
+      scoped_kernel_id(kernel_id, resolved.cache_namespace) != storage_id)
+    throw std::runtime_error("tuned resolver returned a different source namespace");
+  std::lock_guard<std::mutex> lock(load_mu_);
+  auto table = std::make_shared<TunedKernelTable>();
+  table->storage_id_ = storage_id;
+  const auto* snapshot = snap_.load(std::memory_order_acquire);
+  std::shared_ptr<const TunedKernelTable> current;
+  if (snapshot && static_cast<size_t>(device_index) < snapshot->devices.size()) {
+    const auto& map = snapshot->devices[device_index];
+    auto it = map.find(storage_id);
+    if (it != map.end()) current = it->second;
+  }
+  if (current) {
+    if (current->info_.key_columns != resolved.key_columns || current->info_.ndtype_keys != raw_key.ndtypes) {
+      throw std::runtime_error("tuned resolver for '" + std::string(kernel_id) +
+                               "' disagrees with the bound key schema");
+    }
+    if (auto* hit = current->find(raw_key)) return hit;
+    table->info_ = current->info_;
+    table->online_ = current->online_;
+    table->offline_ = current->online_ ? current->offline_ : current;
+  } else {
+    table->info_.kernel_id = kernel_id;
+    table->info_.cache_namespace = resolved.cache_namespace;
+    table->info_.key_columns = resolved.key_columns;
+    table->info_.ndtype_keys = raw_key.ndtypes;
+  }
+  table->info_.unsupported.clear();
+  if (!table->online_) table->online_ = std::make_shared<TunedKernelTable::OnlineStorage>();
+  auto node = std::make_unique<TunedKernelTable::OnlineStorage::Node>();
+  for (size_t i = 0; i < raw_key.ndims; ++i)
+    node->entry.dims.push_back(normalize_dim(resolved.key_columns[i].second, raw_key.dims[i]));
+  std::vector<const char*> dtypes;
+  for (size_t i = 0; i < raw_key.ndtypes; ++i) {
+    node->entry.dtypes.emplace_back(raw_key.dtypes[i]);
+    dtypes.push_back(raw_key.dtypes[i]);
+  }
+  node->entry.config = resolved.config;
+  auto& bucket = table->online_->buckets[table->hash_key(node->entry.dims.data(), dtypes.data()) &
+                                         (TunedKernelTable::OnlineStorage::kBuckets - 1)];
+  node->next = bucket.load(std::memory_order_relaxed);
+  auto* saved = node.get();
+  table->online_->owned.push_back(std::move(node));
+  bucket.store(saved, std::memory_order_release);
+  ++table->info_.entry_count;
+  publish_locked(device_index, std::move(table));
+  return &saved->entry.config;
+}
+
+const TunedConfig* TunedTable::find_for_context(std::string_view kernel_id,
+                                                int device_index,
+                                                TuneKeyView key,
+                                                const void* context) const {
+  const auto resolver = std::atomic_load_explicit(&resolver_, std::memory_order_acquire);
+  if (resolver && resolver->identity) return find(resolver->identity(kernel_id, context), device_index, key);
+  return find(kernel_id, device_index, key);
+}
+
+const TunedConfig* TunedTable::resolve(
+    std::string_view kernel_id, int device_index, TuneKeyView key, const void* context, void* stream) {
+  if (device_index < 0 || key.ndims > 32 || (key.ndims && !key.dims) || (key.ndtypes && !key.dtypes))
+    throw std::invalid_argument("tuned resolve: invalid device or key");
+  for (size_t i = 0; i < key.ndtypes; ++i)
+    if (!key.dtypes[i]) throw std::invalid_argument("tuned resolve: null dtype");
+  const auto resolver = std::atomic_load_explicit(&resolver_, std::memory_order_acquire);
+  const std::string storage_id =
+      resolver && resolver->identity ? resolver->identity(kernel_id, context) : std::string(kernel_id);
+  if (const TunedConfig* hit = find(storage_id, device_index, key)) return hit;
+  if (!resolver) {
+    return nullptr;
+  }
+  // Fail fast before any work that could enter Python.
+  detail::refuse_if_frozen(stream,
+                           "resolve tuned config for '" + storage_id + "' on device " +
+                               std::to_string(device_index) + " key=" + inflight_key("", device_index, key),
+                           ColdWork::kConfig);
+
+  std::vector<int64_t> normalized;
+  TuneKeyView flight_key = key;
+  if (auto* bound = kernel(storage_id, device_index)) {
+    if (bound->info().key_columns.size() != key.ndims || bound->info().ndtype_keys != key.ndtypes)
+      throw std::runtime_error("tuned resolve: key schema mismatch");
+    for (size_t i = 0; i < key.ndims; ++i)
+      normalized.push_back(normalize_dim(bound->info().key_columns[i].second, key.dims[i]));
+    flight_key.dims = normalized.data();
+  }
+  const std::string token = inflight_key(storage_id, device_index, flight_key);
+  std::shared_future<const TunedConfig*> future;
+  std::promise<const TunedConfig*> promise;
+  bool owner = false;
+  {
+    std::lock_guard<std::mutex> lock(resolve_mu_);
+    auto it = inflight_.find(token);
+    if (it != inflight_.end()) {
+      future = it->second;
+    } else {
+      future = promise.get_future().share();
+      inflight_.emplace(token, future);
+      owner = true;
+    }
+  }
+  if (!owner) {
+    return resolver->wait ? resolver->wait(future)
+                          : future.get();  // waits outside every lock; rethrows the owner's exception
+  }
+  // Owner: run the resolver with no runtime lock held, publish, then release
+  // the waiters. The key views point at the caller's storage, which outlives
+  // this call.
+  const TunedConfig* result = nullptr;
+  try {
+    // A previous owner can finish between the initial find and acquiring resolve_mu_.
+    if (const auto* hit = find(storage_id, device_index, key)) {
+      result = hit;
+    } else {
+      std::optional<ResolvedEntry> resolved =
+          resolver->with_stream ? resolver->with_stream(kernel_id, device_index, key, context, stream)
+                                : (*resolver)(kernel_id, device_index, key, context);
+      if (resolved) {
+        result = insert_resolved(kernel_id, storage_id, device_index, key, *resolved);
+      }
+    }
+  } catch (...) {
+    {
+      std::lock_guard<std::mutex> lock(resolve_mu_);
+      inflight_.erase(token);
+    }
+    promise.set_exception(std::current_exception());
+    throw;
+  }
+  {
+    std::lock_guard<std::mutex> lock(resolve_mu_);
+    inflight_.erase(token);
+  }
+  promise.set_value(result);
+  return result;
 }
 
 }  // namespace triton_jit

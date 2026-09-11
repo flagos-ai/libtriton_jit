@@ -68,17 +68,20 @@ ScopedFreeze::~ScopedFreeze() {
 namespace detail {
 
   void refuse_if_frozen(void* stream, const std::string& what, ColdWork work) {
-    const char* missing = work == ColdWork::kConfig ? "tuned configuration" :
-                          work == ColdWork::kFunction ? "kernel signature" : "compiled/loaded GPU program";
+    const char* missing = work == ColdWork::kConfig     ? "tuned configuration"
+                          : work == ColdWork::kFunction ? "kernel signature"
+                                                        : "compiled/loaded GPU program";
     if (is_frozen()) {
-      throw FrozenMissError(what + ": missing " + missing +
-          "; ScopedFreeze is active; prepare this invocation before freezing",
-          work, ColdRestriction::kExplicitFreeze);
+      throw FrozenMissError(
+          what + ": missing " + missing + "; ScopedFreeze is active; prepare this invocation before freezing",
+          work,
+          ColdRestriction::kExplicitFreeze);
     }
     if (stream_is_capturing(stream)) {
       throw FrozenMissError(what + ": missing " + missing +
-          "; the stream is being captured; prepare this invocation before capture",
-          work, ColdRestriction::kCapture);
+                                "; the stream is being captured; prepare this invocation before capture",
+                            work,
+                            ColdRestriction::kCapture);
     }
   }
 

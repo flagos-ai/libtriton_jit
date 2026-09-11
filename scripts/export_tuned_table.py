@@ -627,7 +627,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--output", "-o", default=None, help="output JSON path (default: stdout)"
     )
-    parser.add_argument("--cache-namespace", help="portable versioned source identity; requires exactly one exported kernel")
+    parser.add_argument(
+        "--cache-namespace",
+        help="portable versioned source identity; requires exactly one exported kernel",
+    )
     args = parser.parse_args(argv)
 
     def log(message: str) -> None:

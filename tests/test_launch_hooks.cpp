@@ -90,11 +90,8 @@ struct FakeBackend {
     return 128;
   }
 
-  static LaunchOptions prepare_launch(const std::string&,
-                                      const std::string&,
-                                      unsigned int,
-                                      const std::string&,
-                                      size_t) {
+  static LaunchOptions prepare_launch(
+      const std::string&, const std::string&, unsigned int, const std::string&, size_t) {
     return 0;
   }
 
@@ -133,12 +130,8 @@ void test_concurrent_setters_do_not_lose_updates() {
   for (int iteration = 0; iteration < 1000; ++iteration) {
     triton_jit::clear_launch_hooks();
 
-    std::thread enter([] {
-      triton_jit::set_launch_enter_hook([](const triton_jit::LaunchMetadata&) {});
-    });
-    std::thread exit([] {
-      triton_jit::set_launch_exit_hook([](const triton_jit::LaunchMetadata&) {});
-    });
+    std::thread enter([] { triton_jit::set_launch_enter_hook([](const triton_jit::LaunchMetadata&) {}); });
+    std::thread exit([] { triton_jit::set_launch_exit_hook([](const triton_jit::LaunchMetadata&) {}); });
     enter.join();
     exit.join();
 
@@ -163,8 +156,7 @@ void test_reentrant_clear_keeps_current_snapshot() {
     captured = metadata;
     triton_jit::clear_launch_hooks();
   });
-  triton_jit::set_launch_exit_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++exit_count; });
+  triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata&) { ++exit_count; });
 
   FakeKernel kernel("unused", "fake_kernel");
   kernel.prepare();  // The hook token below is not a CUDA stream; avoid a cold driver query.
@@ -195,8 +187,7 @@ void test_enter_exception_prevents_launch() {
 
   triton_jit::set_launch_enter_hook(
       [](const triton_jit::LaunchMetadata&) { throw std::runtime_error("enter failed"); });
-  triton_jit::set_launch_exit_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++exit_count; });
+  triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata&) { ++exit_count; });
 
   bool caught = false;
   try {
@@ -217,10 +208,8 @@ void test_backend_exception_skips_exit() {
   int enter_count = 0;
   int exit_count = 0;
 
-  triton_jit::set_launch_enter_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++enter_count; });
-  triton_jit::set_launch_exit_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++exit_count; });
+  triton_jit::set_launch_enter_hook([&](const triton_jit::LaunchMetadata&) { ++enter_count; });
+  triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata&) { ++exit_count; });
 
   bool caught = false;
   try {
@@ -261,8 +250,9 @@ void test_prepare_loads_without_launch() {
   {
     triton_jit::ScopedFreeze frozen;
     bool refused = false;
-    try { kernel.prepare(); }
-    catch (const triton_jit::FrozenMissError& error) {
+    try {
+      kernel.prepare();
+    } catch (const triton_jit::FrozenMissError& error) {
       refused = error.work() == triton_jit::ColdWork::kProgram;
     }
     REQUIRE(refused);

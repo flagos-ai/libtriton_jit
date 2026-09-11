@@ -38,9 +38,15 @@ class FrozenMissError : public std::runtime_error {
   explicit FrozenMissError(const std::string& what,
                            ColdWork work = ColdWork::kProgram,
                            ColdRestriction restriction = ColdRestriction::kExplicitFreeze)
-      : std::runtime_error(what), work_(work), restriction_(restriction) {}
-  ColdWork work() const noexcept { return work_; }
-  ColdRestriction restriction() const noexcept { return restriction_; }
+      : std::runtime_error(what), work_(work), restriction_(restriction) {
+  }
+  ColdWork work() const noexcept {
+    return work_;
+  }
+  ColdRestriction restriction() const noexcept {
+    return restriction_;
+  }
+
  private:
   ColdWork work_;
   ColdRestriction restriction_;

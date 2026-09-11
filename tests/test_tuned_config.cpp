@@ -22,6 +22,7 @@
 // Runs without a device: every fingerprint is supplied explicitly, except the
 // one detection test that only checks the build's backend name.
 
+#include "triton_jit/freeze.h"
 #include "triton_jit/tuned_config.h"
 
 #include <atomic>
@@ -419,11 +420,19 @@ void test_exported_fixture_round_trip() {
   CHECK(report.kernels == 3);
   CHECK(report.entries == 4);
   CHECK(report.table_fingerprint.triton_version == "3.6.0");
+  const std::string source_namespace = "tests/test_export_tuned_table.py";
+  const auto sgemv_id = triton_jit::scoped_kernel_id("sgemv_n_kernel", source_namespace);
+  const auto mm_id = triton_jit::scoped_kernel_id("mm_kernel", source_namespace);
+  const auto softmax_id = triton_jit::scoped_kernel_id("softmax_kernel", source_namespace);
   // sgemv: default strategies, three dtype keys (A, x, y)
   const int64_t dims[] = {1, 8192};
   const char* fp32x3[] = {"torch.float32", "torch.float32", "torch.float32"};
-  const auto* decode = table.find("sgemv_n_kernel", 0, TuneKeyView {dims, 2, fp32x3, 3});
+  const auto* decode = table.find(sgemv_id, 0, TuneKeyView {dims, 2, fp32x3, 3});
   CHECK(decode != nullptr);
+  CHECK(table.find("sgemv_n_kernel", 0, TuneKeyView {dims, 2, fp32x3, 3}) == nullptr);
+  CHECK(table.find(triton_jit::scoped_kernel_id("sgemv_n_kernel", "other/source.py"),
+                   0,
+                   TuneKeyView {dims, 2, fp32x3, 3}) == nullptr);
   if (decode) {
     CHECK(decode->num_warps == 8 && decode->num_stages == 2);
     CHECK(decode->get_i64("BLOCK_M", -1) == 8 && decode->get_i64("BLOCK_K", -1) == 256);
@@ -432,7 +441,7 @@ void test_exported_fixture_round_trip() {
   // mm: log/log/align32 with a raw shape, bool recovered, extras carried
   const int64_t raw[] = {1000, 4000, 4090};
   const char* halves[] = {"torch.float16", "torch.float16"};
-  const auto* big = table.find("mm_kernel", 0, TuneKeyView {raw, 3, halves, 2});
+  const auto* big = table.find(mm_id, 0, TuneKeyView {raw, 3, halves, 2});
   CHECK(big != nullptr);
   if (big) {
     CHECK(big->get_bool("EVEN_K", false) == true);
@@ -445,14 +454,161 @@ void test_exported_fixture_round_trip() {
   }
   const int64_t small_raw[] = {33, 64, 40};  // log(33)=64, log(64)=64, align32(40)=64
   const char* bf16s[] = {"torch.bfloat16", "torch.bfloat16"};
-  const auto* small = table.find("mm_kernel", 0, TuneKeyView {small_raw, 3, bf16s, 2});
+  const auto* small = table.find(mm_id, 0, TuneKeyView {small_raw, 3, bf16s, 2});
   CHECK(small != nullptr && small->get_bool("EVEN_K", true) == false && small->get_i64("SPLIT_K", -1) == 4);
-  const auto* handle = table.kernel("mm_kernel", 0);
+  const auto* handle = table.kernel(mm_id, 0);
+  CHECK(handle != nullptr && handle->info().cache_namespace == source_namespace);
   CHECK(handle != nullptr && handle->info().candidate_set_hash.size() == 32);
   CHECK(handle != nullptr && !handle->info().config_table_name.empty());
   // the refused kernel is listed with its reason and never hits
-  const auto* refused = table.kernel("softmax_kernel", 0);
+  const auto* refused = table.kernel(softmax_id, 0);
   CHECK(refused != nullptr && refused->info().unsupported.find("heuristics") != std::string::npos);
+}
+
+void test_resolver() {
+  auto& table = TunedTable::instance();
+  table.clear();
+  table.set_resolver(nullptr);
+  CHECK(!table.has_resolver());
+  const int64_t dims[] = {1000, 4000};
+  const char* fp32[] = {"torch.float32"};
+  CHECK(table.resolve("r_kernel", 0, TuneKeyView {dims, 2, fp32, 1}) == nullptr);  // no resolver: plain miss
+
+  std::atomic<int> calls {0};
+  std::atomic<bool> decline {false};
+  std::atomic<bool> explode {false};
+  std::mutex gate_mu;
+  std::condition_variable gate_cv;
+  bool gate_open = true;
+  table.set_resolver([&](std::string_view kernel_id, int device, TuneKeyView key, const void* context)
+                         -> std::optional<TunedTable::ResolvedEntry> {
+    CHECK(context == &calls);  // whatever the caller passed arrives untouched
+    calls.fetch_add(1);
+    {
+      std::unique_lock<std::mutex> lock(gate_mu);
+      gate_cv.wait(lock, [&] { return gate_open; });
+    }
+    if (explode.load()) {
+      throw std::runtime_error("benchmark failed");
+    }
+    if (decline.load()) {
+      return std::nullopt;
+    }
+    TunedTable::ResolvedEntry entry;
+    entry.key_columns = {
+        {"m", KeyStrategy::kLog},
+        {"n", KeyStrategy::kLog}
+    };
+    entry.config.num_warps = 8;
+    entry.config.kwargs.emplace_back("BLOCK",
+                                     int64_t {key.dims[0] + device + (kernel_id == "r_kernel" ? 0 : 1000)});
+    return entry;
+  });
+  CHECK(table.has_resolver());
+
+  // first resolve calls out, stores under the normalised key, later finds hit
+  const auto* cfg = table.resolve("r_kernel", 0, TuneKeyView {dims, 2, fp32, 1}, &calls);
+  CHECK(cfg != nullptr && cfg->num_warps == 8 && cfg->get_i64("BLOCK", -1) == 1000);
+  CHECK(calls.load() == 1);
+  const int64_t same_bucket[] = {1024, 4096};  // log(1000)=1024, log(4000)=4096
+  CHECK(table.find("r_kernel", 0, TuneKeyView {same_bucket, 2, fp32, 1}) == cfg);
+  CHECK(table.resolve("r_kernel", 0, TuneKeyView {same_bucket, 2, fp32, 1}, &calls) == cfg);
+  CHECK(calls.load() == 1);
+  const auto* handle = table.kernel("r_kernel", 0);
+  CHECK(handle != nullptr && handle->info().entry_count == 1 &&
+        handle->info().key_columns[0].second == KeyStrategy::kLog);
+  // a second key extends the same kernel table; the first row survives
+  const int64_t other[] = {8, 8};
+  const auto* cfg2 = table.resolve("r_kernel", 0, TuneKeyView {other, 2, fp32, 1}, &calls);
+  CHECK(cfg2 != nullptr && cfg2->get_i64("BLOCK", -1) == 8);
+  CHECK(table.kernel("r_kernel", 0)->info().entry_count == 2);
+  CHECK(table.find("r_kernel", 0, TuneKeyView {dims, 2, fp32, 1}) != nullptr);
+  // devices are separate
+  CHECK(table.resolve("r_kernel", 1, TuneKeyView {dims, 2, fp32, 1}, &calls)->get_i64("BLOCK", -1) == 1001);
+  // a declined key is not cached
+  decline.store(true);
+  const int64_t declined[] = {3, 3};
+  CHECK(table.resolve("r_kernel", 0, TuneKeyView {declined, 2, fp32, 1}, &calls) == nullptr);
+  CHECK(table.resolve("r_kernel", 0, TuneKeyView {declined, 2, fp32, 1}, &calls) == nullptr);
+  CHECK(calls.load() == 5);
+  decline.store(false);
+  // frozen: refused before the resolver runs; loaded rows still answer
+  {
+    triton_jit::ScopedFreeze guard;
+    const int64_t fresh[] = {40, 40};  // log -> {64, 64}: a bucket nobody resolved yet
+    bool refused = false;
+    try {
+      table.resolve("r_kernel", 0, TuneKeyView {fresh, 2, fp32, 1}, &calls);
+    } catch (const triton_jit::FrozenMissError&) {
+      refused = true;
+    }
+    CHECK(refused);
+    CHECK(calls.load() == 5);
+    const auto* still = table.resolve("r_kernel", 0, TuneKeyView {dims, 2, fp32, 1}, &calls);
+    CHECK(still != nullptr && still->get_i64("BLOCK", -1) == 1000);
+  }
+  // an exception reaches the caller and is not cached
+  explode.store(true);
+  const int64_t boom[] = {129, 129};  // log -> {256, 256}
+  bool threw = false;
+  try {
+    table.resolve("r_kernel", 0, TuneKeyView {boom, 2, fp32, 1}, &calls);
+  } catch (const std::runtime_error& error) {
+    threw = std::string(error.what()) == "benchmark failed";
+  }
+  CHECK(threw);
+  explode.store(false);
+  CHECK(table.resolve("r_kernel", 0, TuneKeyView {boom, 2, fp32, 1}, &calls) !=
+        nullptr);  // retried after the failure
+  // same key from 8 threads while the resolver is blocked: one call, one answer for everybody
+  {
+    std::lock_guard<std::mutex> lock(gate_mu);
+    gate_open = false;
+  }
+  const int before = calls.load();
+  std::vector<std::thread> workers;
+  std::vector<const TunedConfig*> answers(8, nullptr);
+  for (int t = 0; t < 8; ++t) {
+    workers.emplace_back([&, t] {
+      const int64_t thread_dims[] = {77 + t, 77 + t};  // different raw keys, same log bucket
+      answers[t] = table.resolve("r_kernel", 0, TuneKeyView {thread_dims, 2, fp32, 1}, &calls);
+    });
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  {
+    std::lock_guard<std::mutex> lock(gate_mu);
+    gate_open = true;
+  }
+  gate_cv.notify_all();
+  for (auto& worker : workers) {
+    worker.join();
+  }
+  CHECK(calls.load() == before + 1);
+  for (const auto* answer : answers) {
+    CHECK(answer != nullptr && answer == answers[0] && answer->get_i64("BLOCK", -1) >= 77 &&
+          answer->get_i64("BLOCK", -1) <= 84);
+  }
+  // resolving into a loaded table keeps the table's own key layout, and a
+  // key of the wrong width is an error rather than a silent bad row
+  table.clear();
+  table.load(kFixture, 0, h800());
+  bool schema_refused = false;
+  try {
+    table.resolve("sgemv_n_kernel", 0, TuneKeyView {dims, 2, fp32, 1}, &calls);
+  } catch (const std::runtime_error&) {
+    schema_refused = true;
+  }
+  CHECK(schema_refused);  // Same width, different strategies must never be merged.
+  CHECK(table.kernel("sgemv_n_kernel", 0)->info().entry_count == 3);
+  const int64_t one_dim[] = {5};
+  bool mismatch = false;
+  try {
+    table.resolve("sgemv_n_kernel", 0, TuneKeyView {one_dim, 1, fp32, 1}, &calls);
+  } catch (const std::runtime_error& error) {
+    mismatch = std::string(error.what()).find("key") != std::string::npos;
+  }
+  CHECK(mismatch);
+  table.set_resolver(nullptr);
 }
 
 void test_concurrent_find_during_load() {
@@ -502,6 +658,7 @@ int main() {
   test_malformed_tables();
   test_additive_load_and_device_isolation();
   test_exported_fixture_round_trip();
+  test_resolver();
   test_concurrent_find_during_load();
   TunedTable::instance().clear();
   if (failures != 0) {

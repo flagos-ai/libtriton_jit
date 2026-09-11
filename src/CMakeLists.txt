@@ -73,8 +73,19 @@ endif()
 # Set backend compile definition based on BACKEND variable
 target_compile_definitions(triton_jit PUBLIC BACKEND_${BACKEND})
 
-# nlohmann_json is only used in kernel_metadata.cpp, keep it PRIVATE
+# nlohmann_json is only used in kernel_metadata.cpp and tuned_config.cpp, keep it PRIVATE
 target_link_libraries(triton_jit PRIVATE nlohmann_json::nlohmann_json)
+
+# --------------------------- torch resolver (optional) ---------------------------
+# The bridge that hands a launch's tensors to the Python LibTuner. Kept as its
+# own target so that only consumers that want it link libtorch_python.
+if(TRITON_JIT_BUILD_TORCH_RESOLVER)
+  add_library(triton_jit_torch_resolver SHARED torch_tuned_resolver.cpp)
+  target_link_libraries(triton_jit_torch_resolver
+    PUBLIC triton_jit Torch::Torch_Python
+    PRIVATE pybind11::embed)
+  add_library(TritonJIT::triton_jit_torch_resolver ALIAS triton_jit_torch_resolver)
+endif()
 
 # --------------------------- alias targets ---------------------------
 # This is the target used in FetchContent, since FetchContent use add_subdirectory (a sub project build)
@@ -91,6 +102,13 @@ if(TRITON_JIT_INSTALL)
     EXPORT TritonJITTargets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
   )
+  if(TRITON_JIT_BUILD_TORCH_RESOLVER)
+    install(
+      TARGETS triton_jit_torch_resolver
+      EXPORT TritonJITTargets
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+  endif()
   install(
     EXPORT TritonJITTargets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TritonJIT

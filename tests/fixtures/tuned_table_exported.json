@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "generator": "scripts/export_tuned_table.py",
   "generated_at": "2026-09-08T00:00:00+00:00",
   "source_db": "sqlite:///TunedConfig_nvidia_triton_3_6.db (synthetic, tests/test_export_tuned_table.py)",
@@ -17,7 +17,8 @@
       "op_name": "sgemv_n",
       "config_table_name": "sgemv_n_e46835c8ab48f5037412ee53874b34c2",
       "source_path": "tests/test_export_tuned_table.py",
-      "source_sha256": "3c6427025ea9830ec42ff2ae94c50352cd3db393a7dd144e47df764c6bc133e7",
+      "cache_namespace": "tests/test_export_tuned_table.py",
+      "source_sha256": "5825fd388be1940d7a0be7fc567f27a1f8a63f7f6b87f4d7e39f3b1b71143684",
       "candidate_set_hash": "37770ad1bcf26046c97ffab80fefb809",
       "key_columns": [
         {
@@ -80,7 +81,8 @@
       "op_name": "mm",
       "config_table_name": "mm_b3cd915d758008bd19d0f2428fbb354a",
       "source_path": "tests/test_export_tuned_table.py",
-      "source_sha256": "3c6427025ea9830ec42ff2ae94c50352cd3db393a7dd144e47df764c6bc133e7",
+      "cache_namespace": "tests/test_export_tuned_table.py",
+      "source_sha256": "5825fd388be1940d7a0be7fc567f27a1f8a63f7f6b87f4d7e39f3b1b71143684",
       "candidate_set_hash": "d192e0c4ad64a9c35fe32972477e4cd8",
       "key_columns": [
         {
@@ -186,7 +188,8 @@
       "op_name": "softmax",
       "config_table_name": "softmax_ce2f1fbd249d24aabc07ac4488ab5b8c",
       "source_path": "tests/test_export_tuned_table.py",
-      "source_sha256": "3c6427025ea9830ec42ff2ae94c50352cd3db393a7dd144e47df764c6bc133e7",
+      "cache_namespace": "tests/test_export_tuned_table.py",
+      "source_sha256": "5825fd388be1940d7a0be7fc567f27a1f8a63f7f6b87f4d7e39f3b1b71143684",
       "candidate_set_hash": "cfcd208495d565ef66e7dff9f98764da",
       "key_columns": [],
       "dtype_keys": 0,

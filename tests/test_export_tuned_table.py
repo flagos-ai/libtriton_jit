@@ -430,6 +430,10 @@ def run(script_path: str, fixture_out: Optional[str]) -> int:
         set(kernels) == {"sgemv_n_kernel", "mm_kernel", "softmax_kernel"},
         f"kernel ids: {sorted(kernels)}",
     )
+    check(
+        all(k["cache_namespace"] == k["source_path"] != "" for k in kernels.values()),
+        "v2 namespaces default to the source path",
+    )
 
     sgemv = kernels["sgemv_n_kernel"]
     check(sgemv["op_name"] == "sgemv_n", "op_name")
@@ -612,6 +616,7 @@ def run(script_path: str, fixture_out: Optional[str]) -> int:
         ] = "sqlite:///TunedConfig_nvidia_triton_3_6.db (synthetic, tests/test_export_tuned_table.py)"
         for kernel in fixed["kernels"]:
             kernel["source_path"] = "tests/test_export_tuned_table.py"
+            kernel["cache_namespace"] = kernel["source_path"]
         with open(fixture_out, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(fixed, indent=2) + "\n")
         print(f"wrote {fixture_out}")

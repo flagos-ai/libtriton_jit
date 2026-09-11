@@ -67,14 +67,14 @@ void clear_launch_hooks();
 
 namespace detail {
 
-struct LaunchHooksState {
-  LaunchHook enter;
-  LaunchHook exit;
-};
+  struct LaunchHooksState {
+    LaunchHook enter;
+    LaunchHook exit;
+  };
 
-using LaunchHooksSnapshot = std::shared_ptr<const LaunchHooksState>;
+  using LaunchHooksSnapshot = std::shared_ptr<const LaunchHooksState>;
 
-LaunchHooksSnapshot get_launch_hooks_snapshot();
+  LaunchHooksSnapshot get_launch_hooks_snapshot();
 
 }  // namespace detail
 
@@ -202,12 +202,15 @@ class TritonKernelImpl {
   }
 
   // Load without executing the kernel. This is separate from compilation.
-  void prepare(void* stream = nullptr) const { lazy_init_handle(stream); }
+  void prepare(void* stream = nullptr) const {
+    lazy_init_handle(stream);
+  }
 
  private:
   void lazy_init_handle(void* stream) const {
     if (is_loaded()) return;
-    detail::refuse_if_frozen(stream, "load GPU module for '" + kernel_name_ + "' [" + dir_ + "]",
+    detail::refuse_if_frozen(stream,
+                             "load GPU module for '" + kernel_name_ + "' [" + dir_ + "]",
                              ColdWork::kProgram);
     std::lock_guard<std::mutex> lock(load_state_->mutex);
     if (is_loaded()) return;

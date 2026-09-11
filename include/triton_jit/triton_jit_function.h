@@ -160,8 +160,7 @@ struct ArgHandle {
     static_assert(sizeof...(Ts) > 0, "Runtime tuple arguments must not be empty");
     static_assert((is_runtime_tuple_element_v<Ts> && ...),
                   "Runtime tuple arguments contain an unsupported scalar type");
-    TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR,
-                "Runtime tuple arguments cannot be constexpr");
+    TORCH_CHECK(this->ssig.at(idx) != ArgType::CONSTEXPR, "Runtime tuple arguments cannot be constexpr");
 
     std::string grouped_signature = "(";
     bool first = true;
@@ -387,7 +386,9 @@ class TritonJITFunctionImpl {
 
   // Compile/load only: does not launch the kernel or mutate caller tensors.
   // The caller supplies the signature and options selected during config preparation.
-  void prepare(std::string_view signature, const CompileOptions& opts, int device_index,
+  void prepare(std::string_view signature,
+               const CompileOptions& opts,
+               int device_index,
                void* stream = nullptr) const {
     Backend::ensure_context();
     if (Backend::get_device_index() != device_index)
