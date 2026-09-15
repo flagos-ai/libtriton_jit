@@ -64,46 +64,46 @@ struct CompileOptions {
 
 namespace detail {
 
-inline void validate_compile_options(const CompileOptions& opts) {
-  for (const char* reserved : {"num_warps", "num_stages"}) {
-    if (opts.extra.find(reserved) != opts.extra.end()) {
-      throw std::invalid_argument(std::string("CompileOptions.extra must not override reserved option '") +
-                                  reserved + "'");
+  inline void validate_compile_options(const CompileOptions& opts) {
+    for (const char* reserved : {"num_warps", "num_stages"}) {
+      if (opts.extra.find(reserved) != opts.extra.end()) {
+        throw std::invalid_argument(std::string("CompileOptions.extra must not override reserved option '") +
+                                    reserved + "'");
+      }
     }
   }
-}
 
-inline void append_cache_key_field(std::string& key, std::string_view value) {
-  key += std::to_string(value.size());
-  key.push_back(':');
-  key.append(value.begin(), value.end());
-}
-
-inline std::string make_kernel_cache_key(std::string_view signature,
-                                         int device_index,
-                                         const CompileOptions& opts) {
-  validate_compile_options(opts);
-
-  std::string key;
-  key.reserve(signature.size() + opts.extra.size() * 24 + 64);
-  key += "sig=";
-  append_cache_key_field(key, signature);
-  key += ";dev=";
-  append_cache_key_field(key, std::to_string(device_index));
-  key += ";nw=";
-  append_cache_key_field(key, std::to_string(opts.num_warps));
-  key += ";ns=";
-  append_cache_key_field(key, std::to_string(opts.num_stages));
-  key += ";extra=";
-  append_cache_key_field(key, std::to_string(opts.extra.size()));
-  for (const auto& [name, value] : opts.extra) {
-    key += ";name=";
-    append_cache_key_field(key, name);
-    key += ";value=";
-    append_cache_key_field(key, value);
+  inline void append_cache_key_field(std::string& key, std::string_view value) {
+    key += std::to_string(value.size());
+    key.push_back(':');
+    key.append(value.begin(), value.end());
   }
-  return key;
-}
+
+  inline std::string make_kernel_cache_key(std::string_view signature,
+                                           int device_index,
+                                           const CompileOptions& opts) {
+    validate_compile_options(opts);
+
+    std::string key;
+    key.reserve(signature.size() + opts.extra.size() * 24 + 64);
+    key += "sig=";
+    append_cache_key_field(key, signature);
+    key += ";dev=";
+    append_cache_key_field(key, std::to_string(device_index));
+    key += ";nw=";
+    append_cache_key_field(key, std::to_string(opts.num_warps));
+    key += ";ns=";
+    append_cache_key_field(key, std::to_string(opts.num_stages));
+    key += ";extra=";
+    append_cache_key_field(key, std::to_string(opts.extra.size()));
+    for (const auto& [name, value] : opts.extra) {
+      key += ";name=";
+      append_cache_key_field(key, name);
+      key += ";value=";
+      append_cache_key_field(key, value);
+    }
+    return key;
+  }
 
 }  // namespace detail
 
@@ -232,6 +232,11 @@ constexpr const char* narrow_type_name(const T& v) {
 // path of python executable
 std::filesystem::path get_script_dir();
 
+// Bring up the embedded interpreter the way the runtime does (TRITON_JIT_BACKEND
+// in os.environ, vendor torch modules imported). Idempotent; safe to call
+// before touching Python from a consumer.
+void ensure_initialized();
+
 #ifdef BACKEND_NPU
 // ACL error checking function
 inline void checkAclErrors(aclError code, const char* message = "") {
@@ -281,14 +286,15 @@ inline void __checkMacaErrors(mcError_t code, const char* file, const int line) 
 
 // Error handling function using exceptions instead of exit()
 inline void __checkMluErrors(CNresult code, const char* file, const int line) {
-  if (code != CN_SUCCESS){
+  if (code != CN_SUCCESS) {
     const char* error_string;
     cnGetErrorString(code, &error_string);
-    fprintf(stderr, "MLU Driver API error = %04d from file <%s>, line %i. Detail: <%s>\n",
-        code,
-        file,
-        line,
-        error_string);
+    fprintf(stderr,
+            "MLU Driver API error = %04d from file <%s>, line %i. Detail: <%s>\n",
+            code,
+            file,
+            line,
+            error_string);
     throw std::runtime_error(error_string);
   }
 }

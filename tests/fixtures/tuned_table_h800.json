@@ -1,0 +1,59 @@
+{
+  "format_version": 1,
+  "generator": "hand-written fixture mirroring scripts/export_tuned_table.py output",
+  "generated_at": "2026-09-08T00:00:00Z",
+  "fingerprint": {
+    "backend": "CUDA",
+    "vendor": "nvidia",
+    "device_name": "NVIDIA H800",
+    "arch": "sm_90",
+    "triton_version": "3.6.0",
+    "libtriton_jit_version": "0.1.0"
+  },
+  "kernels": [
+    {
+      "kernel_id": "sgemv_n_kernel",
+      "op_name": "sgemv_n",
+      "config_table_name": "sgemv_n_0123456789abcdef0123456789abcdef",
+      "source_sha256": "",
+      "candidate_set_hash": "",
+      "key_columns": [
+        {"name": "m", "strategy": "default"},
+        {"name": "n", "strategy": "default"}
+      ],
+      "dtype_keys": 1,
+      "entries": [
+        {"key": [4096, 4096, "torch.float32"], "num_warps": 4, "num_stages": 4,
+         "kwargs": [["BLOCK_M", 32], ["BLOCK_K", 128]]},
+        {"key": [1, 8192, "torch.float32"], "num_warps": 8, "num_stages": 2,
+         "kwargs": [["BLOCK_M", 8], ["BLOCK_K", 256]]},
+        {"key": [4096, 4096, "torch.float64"], "num_warps": 4, "num_stages": 3,
+         "kwargs": [["BLOCK_M", 16], ["BLOCK_K", 64]]}
+      ]
+    },
+    {
+      "kernel_id": "mm_kernel",
+      "op_name": "mm",
+      "config_table_name": "mm_fedcba9876543210fedcba9876543210",
+      "key_columns": [
+        {"name": "M", "strategy": "log"},
+        {"name": "N", "strategy": "log"},
+        {"name": "K", "strategy": "align32"}
+      ],
+      "dtype_keys": 2,
+      "entries": [
+        {"key": [1024, 4096, 4096, "torch.float16", "torch.float16"], "num_warps": 8, "num_stages": 3,
+         "extra": {"maxnreg": "255"},
+         "kwargs": {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64, "SPLIT_K": 1, "EVEN_K": true, "SCALE": 0.5, "MODE": "fast"}}
+      ]
+    },
+    {
+      "kernel_id": "softmax_kernel",
+      "op_name": "softmax",
+      "unsupported": "kernel is wrapped in @triton.heuristics; heuristic constexprs never reach the database",
+      "key_columns": [],
+      "dtype_keys": 0,
+      "entries": []
+    }
+  ]
+}

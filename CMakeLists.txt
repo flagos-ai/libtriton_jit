@@ -150,6 +150,7 @@ option(TRITON_JIT_USE_EXTERNAL_FMTLIB "Use external fmtlib" OFF)
 option(TRITON_JIT_USE_EXTERNAL_PYBIND11 "Use external pybind11 library" ON)
 
 option(TRITON_JIT_INSTALL "Install the packages" ${PROJECT_IS_TOP_LEVEL})
+option(TRITON_JIT_BUILD_TORCH_RESOLVER "Build the torch-side tuned-config resolver (links libtorch_python)" ON)
 
 # ==============================================================================
 # Dependencies: Python & Torch (common to all backends)

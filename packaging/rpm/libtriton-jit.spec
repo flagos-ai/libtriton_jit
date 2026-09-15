@@ -62,6 +62,7 @@ find %{buildroot}%{_libdir} -name "*.so*" -type f -exec patchelf --remove-rpath 
 %license LICENSE
 %doc README.md
 %{_libdir}/libtriton_jit.so
+%{_libdir}/libtriton_jit_torch_resolver.so
 %{_datadir}/triton_jit/scripts/*.py
 
 %files devel

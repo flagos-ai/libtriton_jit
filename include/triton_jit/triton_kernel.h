@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -29,6 +30,7 @@
 #include <unordered_map>
 
 #include "triton_jit/backend_policy.h"
+#include "triton_jit/freeze.h"
 #include "triton_jit/jit_utils.h"
 
 namespace triton_jit {
@@ -65,14 +67,14 @@ void clear_launch_hooks();
 
 namespace detail {
 
-struct LaunchHooksState {
-  LaunchHook enter;
-  LaunchHook exit;
-};
+  struct LaunchHooksState {
+    LaunchHook enter;
+    LaunchHook exit;
+  };
 
-using LaunchHooksSnapshot = std::shared_ptr<const LaunchHooksState>;
+  using LaunchHooksSnapshot = std::shared_ptr<const LaunchHooksState>;
 
-LaunchHooksSnapshot get_launch_hooks_snapshot();
+  LaunchHooksSnapshot get_launch_hooks_snapshot();
 
 }  // namespace detail
 
@@ -85,14 +87,18 @@ class TritonKernelImpl {
  private:
   std::string dir_;
   std::string kernel_name_;
-  mutable bool loaded_ = false;
-  mutable typename Backend::KernelHandle kernel_handle_;
+  struct LoadState {
+    std::atomic<bool> loaded {false};
+    std::mutex mutex;
+    typename Backend::KernelHandle handle {};
+  };
+  std::shared_ptr<LoadState> load_state_ = std::make_shared<LoadState>();
 
  public:
   TritonKernelImpl() = default;
 
   TritonKernelImpl(std::string_view dir, std::string_view kernel_name)
-      : dir_(std::string(dir)), kernel_name_(std::string(kernel_name)), loaded_(false) {
+      : dir_(std::string(dir)), kernel_name_(std::string(kernel_name)) {
   }
 
   // Delete copy constructor and assignment
@@ -129,7 +135,10 @@ class TritonKernelImpl {
                              const std::string& signature,
                              size_t num_args = 0) const {
     // Lazy initialization
-    lazy_init_handle();
+    void* raw_stream = nullptr;
+    if constexpr (std::is_pointer_v<typename Backend::StreamType>)
+      raw_stream = reinterpret_cast<void*>(stream);
+    lazy_init_handle(raw_stream);
 
     // Calculate block dimensions using backend-specific warp size
     unsigned int block_x = num_warps * Backend::WARP_SIZE;
@@ -165,7 +174,7 @@ class TritonKernelImpl {
 
     // Launch kernel using backend policy (unified interface)
     Backend::launch_kernel(stream,
-                           kernel_handle_,
+                           load_state_->handle,
                            grid_x,
                            grid_y,
                            grid_z,
@@ -188,19 +197,25 @@ class TritonKernelImpl {
     return kernel_name_;
   }
 
-  bool is_loaded() const {
-    return loaded_;
+  bool is_loaded() const noexcept {
+    return load_state_->loaded.load(std::memory_order_acquire);
+  }
+
+  // Load without executing the kernel. This is separate from compilation.
+  void prepare(void* stream = nullptr) const {
+    lazy_init_handle(stream);
   }
 
  private:
-  void lazy_init_handle() const {
-    if (loaded_) {
-      return;
-    }
-
-    // Note: For thread safety, the backend's load_kernel should be thread-safe
-    kernel_handle_ = Backend::load_kernel(dir_, kernel_name_);
-    loaded_ = true;
+  void lazy_init_handle(void* stream) const {
+    if (is_loaded()) return;
+    detail::refuse_if_frozen(stream,
+                             "load GPU module for '" + kernel_name_ + "' [" + dir_ + "]",
+                             ColdWork::kProgram);
+    std::lock_guard<std::mutex> lock(load_state_->mutex);
+    if (is_loaded()) return;
+    load_state_->handle = Backend::load_kernel(dir_, kernel_name_);
+    load_state_->loaded.store(true, std::memory_order_release);
   }
 
   // Friend declaration for TritonJITFunction
