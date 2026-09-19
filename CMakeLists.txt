@@ -211,7 +211,9 @@ endif()
 # ==============================================================================
 # --- nlohmann_json ---
 if(TRITON_JIT_USE_EXTERNAL_JSON)
-    find_package(nlohmann_json 3.11.3 REQUIRED)
+    # Only basic JSON (de)serialization is used, so 3.11.2 (the version
+    # shipped by openEuler 24.03 LTS) works, no need to require 3.11.3.
+    find_package(nlohmann_json 3.11.2 REQUIRED)
 else()
     github_url(JSON_URL "nlohmann/json/releases/download/v3.11.3/json.tar.xz")
     FetchContent_Declare(json URL ${JSON_URL} DOWNLOAD_EXTRACT_TIMESTAMP ON)
