@@ -14,6 +14,14 @@ BuildRequires:  ninja-build
 BuildRequires:  gcc-c++
 BuildRequires:  python3-devel
 BuildRequires:  patchelf
+# nlohmann_json is packaged under two different names: Fedora and EL call it
+# json-devel, openEuler keeps the upstream name.
+%if 0%{?openEuler}
+BuildRequires:  nlohmann-json-devel >= 3.10.5
+%else
+BuildRequires:  json-devel >= 3.10.5
+%endif
+BuildRequires:  fmt-devel >= 8.1.1
 
 %description
 libtriton_jit is a C++ library providing Triton JIT runtime functionality.
@@ -43,8 +51,8 @@ TORCH_CMAKE_PATH=$(python3 -c "import importlib.util; s=importlib.util.find_spec
     -DCMAKE_CUDA_FLAGS="-Xcompiler -fPIE" \
     -DTorch_ROOT="${TORCH_CMAKE_PATH}" \
     -DFETCHCONTENT_QUIET=OFF \
-    -DTRITON_JIT_USE_EXTERNAL_JSON=OFF \
-    -DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
+    -DTRITON_JIT_USE_EXTERNAL_JSON=ON \
+    -DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
     -DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
     -DTRITON_JIT_BUILD_OPERATORS=OFF \
     -DBUILD_TESTING=OFF \
