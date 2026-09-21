@@ -26,9 +26,10 @@ on:
       - 'v*'
   pull_request:
     branches: [ main, master, multi-backend ]
+    # Only what changes the package. A package built on a source PR is
+    # published nowhere and downloaded by no one; release tags above still
+    # build, and a build can be requested by hand.
     paths:
-      - 'src/**'
-      - 'CMakeLists.txt'
       - 'packaging/debian/**'
       - '.github/workflows/build-deb.yml'
   workflow_dispatch:
