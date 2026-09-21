@@ -1,3 +1,21 @@
+libtriton-jit (0.1.0-3) unstable; urgency=medium
+
+  * Generate distro runtime dependencies instead of swallowing shlib errors.
+  * Ignore only CUDA and pip-provided PyTorch libraries during dependency scan.
+  * Require the Python 3.12 shared library used by the embedded runtime.
+  * Pin the validated RPM Python, PyTorch, Triton, and pybind11 ABI stack.
+
+ -- The FlagOS Contributors <contact@flagos.io>  Fri, 07 Aug 2026 12:00:00 +0900
+
+libtriton-jit (0.1.0-2) unstable; urgency=medium
+
+  * Build against system fmt and nlohmann-json packages instead of vendoring
+    them through CMake FetchContent.
+  * Drop bundled fmt files and depend on libfmt-dev from the development
+    package.
+
+ -- The FlagOS Contributors <contact@flagos.io>  Wed, 05 Aug 2026 19:55:54 +0900
+
 libtriton-jit (0.1.0-1) unstable; urgency=medium
 
   * Initial release

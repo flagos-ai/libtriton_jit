@@ -2,7 +2,8 @@
 set -e
 
 # libtriton-jit Debian package build script
-# Usage: ./build-libtriton-jit.sh [--base-image IMAGE] [--output-dir DIR]
+# Usage: ./build-libtriton-jit.sh [--vendor VENDOR] [--base-image IMAGE] [--output-dir DIR]
+#   --vendor : nvidia (default) | metax | mthreads
 
 # Colors
 RED='\033[0;31m'
@@ -21,11 +22,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 # the resulting -dev package is ABI-compatible with the FlagGems C++ build
 # that consumes it; overriding it risks a silent ABI mismatch.
 BASE_IMAGE="nvidia/cuda:12.8.0-devel-ubuntu22.04"
+VENDOR="nvidia"
 OUTPUT_DIR=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --vendor)
+            VENDOR="$2"
+            shift 2
+            ;;
         --base-image)
             BASE_IMAGE="$2"
             shift 2
@@ -36,7 +42,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--base-image IMAGE] [--output-dir DIR]"
+            echo "Usage: $0 [--vendor VENDOR] [--base-image IMAGE] [--output-dir DIR]"
             exit 1
             ;;
     esac
@@ -65,12 +71,23 @@ if [ ! -f "$DOCKERFILE" ]; then
     exit 1
 fi
 
+# Map the vendor flavor to the CMake BACKEND policy.
+case "$VENDOR" in
+    nvidia)   BACKEND="CUDA" ;;
+    metax)    BACKEND="MACA" ;;
+    mthreads) BACKEND="MUSA" ;;
+    *) log_error "Unknown vendor: $VENDOR (want nvidia|metax|mthreads)"; exit 1 ;;
+esac
+log_info "Vendor: ${VENDOR} (CMake backend: ${BACKEND})"
+
 IMAGE_TAG="libtriton-jit-deb-builder"
 
 # Build the Docker image (multi-stage, target output)
 log_step "Building container image: ${IMAGE_TAG}"
 if ! docker build \
     --build-arg BASE_IMAGE="${BASE_IMAGE}" \
+    --build-arg VENDOR="${VENDOR}" \
+    --build-arg BACKEND="${BACKEND}" \
     -f "${DOCKERFILE}" \
     --target output \
     -t "${IMAGE_TAG}" \

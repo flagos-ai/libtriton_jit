@@ -1,10 +1,21 @@
-Name:           libtriton-jit-nvidia
+# Vendor flavor and the matching CMake backend policy. Override at build
+# time for other backends, e.g.:
+#   rpmbuild --define "vendor mthreads" --define "backend MUSA" ...
+# The source already supports the MUSA (Moore Threads) and MACA (MetaX)
+# backends; only the build environment (SDK + torch) differs per vendor.
+%{!?vendor_flavor: %global vendor_flavor nvidia}
+%{!?backend: %global backend CUDA}
+
+# CUDA and PyTorch are supplied by the selected vendor environment, not the
+# RPM database. Keep automatic requirements for distro libraries and Python.
+%global __requires_exclude ^(libcuda[.]so[.]1|libtorch(_cpu|_cuda)?[.]so|libc10[.]so)[(][)][(]64bit[)]$
+
+Name:           libtriton-jit-%{vendor_flavor}
 Version:        0.1.0
-Release:        1%{?dist}
+Release:        3%{?dist}
 Summary:        Triton JIT runtime library
 
 License:        MIT
-# Note: bundled fmt (MIT with optional exception) is included in the devel subpackage
 URL:            https://github.com/flagos-ai/libtriton_jit
 Source0:        libtriton-jit-%{version}.tar.gz
 
@@ -12,6 +23,8 @@ Source0:        libtriton-jit-%{version}.tar.gz
 BuildRequires:  cmake
 BuildRequires:  ninja-build
 BuildRequires:  gcc-c++
+BuildRequires:  fmt-devel >= 8.1.1
+BuildRequires:  json-devel >= 3.10.5
 BuildRequires:  python3-devel
 BuildRequires:  patchelf
 
@@ -22,7 +35,7 @@ It enables just-in-time compilation of Triton kernels for GPU acceleration.
 %package devel
 Summary:        Development files for %{name}
 Requires:       %{name}%{?_isa} = %{version}-%{release}
-Conflicts:      fmt-devel
+Requires:       fmt-devel >= 8.1.1
 
 %description devel
 Development files (headers and CMake configs) for libtriton_jit.
@@ -40,11 +53,13 @@ TORCH_CMAKE_PATH=$(python3 -c "import importlib.util; s=importlib.util.find_spec
 %cmake \
     -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DBACKEND=%{backend} \
     -DCMAKE_CUDA_FLAGS="-Xcompiler -fPIE" \
     -DTorch_ROOT="${TORCH_CMAKE_PATH}" \
+    -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
     -DFETCHCONTENT_QUIET=OFF \
-    -DTRITON_JIT_USE_EXTERNAL_JSON=OFF \
-    -DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
+    -DTRITON_JIT_USE_EXTERNAL_JSON=ON \
+    -DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
     -DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
     -DTRITON_JIT_BUILD_OPERATORS=OFF \
     -DBUILD_TESTING=OFF \
@@ -66,12 +81,16 @@ find %{buildroot}%{_libdir} -name "*.so*" -type f -exec patchelf --remove-rpath 
 
 %files devel
 %{_includedir}/triton_jit/
-%{_includedir}/fmt/
 %{_libdir}/cmake/TritonJIT/
-%{_libdir}/cmake/fmt/
-%{_libdir}/libfmt.so*
-%{_libdir}/pkgconfig/fmt.pc
 
 %changelog
+* Fri Aug 07 2026 The FlagOS Contributors <contact@flagos.io> - 0.1.0-3
+- Keep automatic distro runtime dependencies while filtering vendor libraries
+- Pin the validated Python 3.9, PyTorch 2.8, and Triton 3.4 build stack
+
+* Wed Aug 05 2026 The FlagOS Contributors <contact@flagos.io> - 0.1.0-2
+- Build against EPEL fmt-devel and json-devel instead of vendoring them
+- Drop bundled fmt files and require fmt-devel from the devel package
+
 * Sun Feb 08 2026 FlagTree Project <contact@flagos.io> - 0.1.0-1
 - Initial RPM release

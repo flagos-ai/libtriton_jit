@@ -8,10 +8,6 @@ Copyright: 2024-2025 Clement Chan
            2025-2026 FlagTree Project Management Committee
            2026- The FlagOS Contributors
 License: MIT
-Comment: This package bundles fmt 10.2.1 (downloaded via CMake FetchContent
- at build time). fmt is copyright 2012-present Victor Zverovich and {fmt}
- contributors, licensed under MIT with an optional exception for embedded
- portions. See https://github.com/fmtlib/fmt/blob/10.2.1/LICENSE for details.
 
 Files: packaging/debian/*
 Copyright: 2026 The FlagOS Contributors <contact@flagos.io>

@@ -5,10 +5,9 @@
 # container so the resulting libtriton-jit-dev is ABI-compatible with
 # the FlagGems C++ operator build that consumes it.
 #
-# Ubuntu 22.04 ships cmake 3.22 (< the 3.25 this project requires) and
-# nlohmann-json 3.10.5 (< 3.11.3), so cmake comes from pip and json is
-# fetched at build time (see debian/rules USE_EXTERNAL_JSON=OFF). fmt is
-# fetched too (USE_EXTERNAL_FMTLIB=OFF).
+# Ubuntu 22.04 ships cmake 3.22 (< the 3.25 this project requires), so
+# cmake comes from pip. fmt and nlohmann-json come from the distro
+# libfmt-dev / nlohmann-json3-dev packages.
 
 ARG BASE_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04
 FROM ${BASE_IMAGE} AS builder
@@ -19,6 +18,10 @@ ARG TORCH_PACKAGES="torch==2.10.0+cu128 triton==3.6.0"
 # Cap build parallelism: torch-heavy C++ at full core count OOMs
 # constrained runners (GitHub-hosted runners are ~16 GB).
 ARG BUILD_PARALLEL=4
+# Vendor flavor of the package (nvidia|metax|mthreads) and the matching
+# CMake backend policy. Defaults keep the historical nvidia/CUDA build.
+ARG VENDOR=nvidia
+ARG BACKEND=CUDA
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Packaging tools + python3.12 (deadsnakes; 22.04 system python is 3.10,
@@ -26,7 +29,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # minor must match the consuming container, which is 3.12).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common curl ca-certificates git \
-        build-essential ninja-build patchelf \
+        build-essential ninja-build patchelf libfmt-dev nlohmann-json3-dev \
         debhelper devscripts dpkg-dev fakeroot \
     && add-apt-repository -y ppa:deadsnakes/ppa && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -45,14 +48,17 @@ RUN python3 -m pip install --no-cache-dir --index-url ${TORCH_INDEX} ${TORCH_PAC
 COPY . /workspace/libtriton-jit
 WORKDIR /workspace/libtriton-jit
 
-# Place debian/ at the source root where dpkg-buildpackage expects it
-RUN if [ -d "packaging/debian" ]; then \
-        cp -r packaging/debian debian; \
-    fi
+# Place debian/ at the source root where dpkg-buildpackage expects it,
+# then render the packaging for the requested vendor (renames the binary
+# packages; no-op for nvidia).
+RUN cp -r packaging/debian debian && \
+    bash debian/render-vendor.sh "${VENDOR}" debian
 
 # Build the Debian package (-d to skip dep checks; CUDA/torch deps are
 # container-provided, not apt packages). parallel capped to avoid OOM.
-RUN DEB_BUILD_OPTIONS="parallel=${BUILD_PARALLEL}" dpkg-buildpackage -us -uc -b -d || \
+RUN DEB_BUILD_OPTIONS="parallel=${BUILD_PARALLEL}" \
+    DEB_TRITON_BACKEND="${BACKEND}" \
+    dpkg-buildpackage -us -uc -b -d || \
     { echo "Build failed, checking logs..."; \
       find /workspace -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true; \
       exit 1; }

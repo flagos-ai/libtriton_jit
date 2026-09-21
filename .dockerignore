@@ -23,5 +23,8 @@ build
 .cache
 *.deb
 *.rpm
+debian-packages
+rpm-packages
+build-*.log
 output
 .github

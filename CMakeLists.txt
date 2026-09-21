@@ -211,7 +211,9 @@ endif()
 # ==============================================================================
 # --- nlohmann_json ---
 if(TRITON_JIT_USE_EXTERNAL_JSON)
-    find_package(nlohmann_json 3.11.3 REQUIRED)
+    # Only basic APIs (parse/value/contains/get) are used, so any
+    # nlohmann_json >= 3.10.5 works (the version shipped by Ubuntu 22.04).
+    find_package(nlohmann_json 3.10.5 REQUIRED)
 else()
     github_url(JSON_URL "nlohmann/json/releases/download/v3.11.3/json.tar.xz")
     FetchContent_Declare(json URL ${JSON_URL} DOWNLOAD_EXTRACT_TIMESTAMP ON)
