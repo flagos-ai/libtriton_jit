@@ -47,6 +47,9 @@ elseif(BACKEND STREQUAL "MUSA")
       PUBLIC Torch::Torch MUSA::musa_runtime fmt::fmt-header-only
       PRIVATE pybind11::embed)
 elseif(BACKEND STREQUAL "MACA")
+    # Public headers include the vendor Torch headers, which require USE_MACA
+    # in every consumer translation unit as well as in this library.
+    target_compile_definitions(triton_jit PUBLIC USE_MACA)
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch MACA::mcruntime fmt::fmt-header-only
       PRIVATE pybind11::embed)
@@ -61,6 +64,10 @@ elseif(BACKEND STREQUAL "GCU")
 elseif(BACKEND STREQUAL "HCU")
     target_link_libraries(triton_jit
       PUBLIC Torch::Torch hip::host fmt::fmt-header-only
+      PRIVATE pybind11::embed)
+elseif(BACKEND STREQUAL "PPU")
+    target_link_libraries(triton_jit
+      PUBLIC Torch::Torch PPU::ppu_runtime fmt::fmt-header-only
       PRIVATE pybind11::embed)
 else()
     target_link_libraries(triton_jit

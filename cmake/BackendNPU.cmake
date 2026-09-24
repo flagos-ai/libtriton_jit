@@ -25,7 +25,7 @@
 message(STATUS "Configuring NPU (Ascend) backend...")
 
 # ------------------------------- Ascend Toolkit -------------------------------
-set(ASCEND_TOOLKIT_HOME $ENV{ASCEND_TOOLKIT_HOME})
+set(ASCEND_TOOLKIT_HOME "$ENV{ASCEND_TOOLKIT_HOME}" CACHE PATH "Ascend toolkit root")
 if(NOT ASCEND_TOOLKIT_HOME)
     set(ASCEND_TOOLKIT_HOME "/usr/local/Ascend/ascend-toolkit/latest")
 endif()
@@ -45,11 +45,11 @@ endif()
 
 # ------------------------------- Find Ascend Libraries ------------------------
 find_library(ASCENDCL_LIBRARY ascendcl
-    PATHS ${ASCEND_TOOLKIT_HOME}/lib64
+    PATHS ${ASCEND_TOOLKIT_HOME}/lib64 ${ASCEND_TOOLKIT_HOME}/${ASCEND_ARCH_DIR}/lib64
     NO_DEFAULT_PATH REQUIRED
 )
 find_library(ASCEND_RUNTIME_LIBRARY runtime
-    PATHS ${ASCEND_TOOLKIT_HOME}/lib64
+    PATHS ${ASCEND_TOOLKIT_HOME}/lib64 ${ASCEND_TOOLKIT_HOME}/${ASCEND_ARCH_DIR}/lib64
     NO_DEFAULT_PATH REQUIRED
 )
 
@@ -89,21 +89,35 @@ if(CANN_HOME AND EXISTS "${CANN_HOME}/${ASCEND_ARCH_DIR}/pkg_inc")
 endif()
 
 # ------------------------------- Create Imported Targets ----------------------
-add_library(Ascend::ascendcl SHARED IMPORTED)
+add_library(Ascend::ascendcl SHARED IMPORTED GLOBAL)
 set_target_properties(Ascend::ascendcl PROPERTIES
     IMPORTED_LOCATION ${ASCENDCL_LIBRARY}
     INTERFACE_INCLUDE_DIRECTORIES "${ASCEND_INCLUDE_DIRS}"
 )
 
-add_library(Ascend::runtime SHARED IMPORTED)
+add_library(Ascend::runtime SHARED IMPORTED GLOBAL)
 set_target_properties(Ascend::runtime PROPERTIES
     IMPORTED_LOCATION ${ASCEND_RUNTIME_LIBRARY}
     INTERFACE_INCLUDE_DIRECTORIES "${ASCEND_INCLUDE_DIRS}"
 )
 
 # ------------------------------- torch_npu Integration ------------------------
-# Hardcoded path to libtorch_npu
-set(TORCH_NPU_PATH "/data/baai_user_home/chwork/compile_triton/pytorch/libtorch_npu")
+# Prefer an explicit environment/cache override.  Falling back to the active
+# Python interpreter keeps this usable in both the host venv and the CANN
+# container without importing torch_npu during CMake configuration.
+set(TORCH_NPU_PATH "$ENV{TORCH_NPU_PATH}" CACHE PATH "torch_npu package root")
+if(NOT TORCH_NPU_PATH)
+    execute_process(
+        COMMAND ${Python_EXECUTABLE} -c
+                "import sysconfig; print(sysconfig.get_path('purelib'))"
+        OUTPUT_VARIABLE TORCH_NPU_SITE_PACKAGES
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(TORCH_NPU_SITE_PACKAGES)
+        set(TORCH_NPU_PATH "${TORCH_NPU_SITE_PACKAGES}/torch_npu")
+    endif()
+endif()
 
 if(TORCH_NPU_PATH AND EXISTS "${TORCH_NPU_PATH}")
     message(STATUS "Found torch_npu at: ${TORCH_NPU_PATH}")

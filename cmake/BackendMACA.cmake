@@ -47,7 +47,7 @@ message(STATUS "Found MACA include: ${MACA_INCLUDE_DIR}")
 message(STATUS "Found MACA runtime: ${MACA_RUNTIME_LIB}")
 
 if(NOT TARGET MACA::mcruntime)
-    add_library(MACA::mcruntime SHARED IMPORTED)
+    add_library(MACA::mcruntime SHARED IMPORTED GLOBAL)
     set_target_properties(MACA::mcruntime PROPERTIES
         IMPORTED_LOCATION "${MACA_RUNTIME_LIB}"
         INTERFACE_INCLUDE_DIRECTORIES "${MACA_INCLUDE_DIR};${MACA_INCLUDE_DIR}/mcr"

@@ -29,7 +29,26 @@ if (NOT DEFINED Torch_ROOT)
                   )
 endif()
 message(STATUS "Torch_ROOT: ${Torch_ROOT}")
-find_package(Torch CONFIG REQUIRED)
+if(BACKEND STREQUAL "IX")
+  # The CoreX torch wheel ships a Caffe2 CMake config that hard-requires the
+  # CUDA language, which cannot be enabled with the CoreX nvcc stub.  The IX
+  # backend has no .cu sources, so construct the Torch imported target
+  # directly from the installed headers/libraries instead.
+  get_filename_component(TORCH_INSTALL_PREFIX "${Torch_ROOT}/../.." ABSOLUTE)
+  set(TORCH_INCLUDE_DIRS
+      "${TORCH_INSTALL_PREFIX}/include"
+      "${TORCH_INSTALL_PREFIX}/include/torch/csrc/api/include")
+  find_library(TORCH_LIB
+      NAMES torch
+      PATHS "${TORCH_INSTALL_PREFIX}/lib"
+      REQUIRED)
+  set(TORCH_LIBRARIES "${TORCH_LIB}")
+  set(TORCH_CXX_FLAGS "-D_GLIBCXX_USE_CXX11_ABI=0")
+  message(STATUS "IX Torch include: ${TORCH_INCLUDE_DIRS}")
+  message(STATUS "IX Torch libraries: ${TORCH_LIBRARIES}")
+else()
+  find_package(Torch CONFIG REQUIRED)
+endif()
 
 # message(STATUS "TORCH_INSTALL_PREFIX: ${TORCH_INSTALL_PREFIX}")
 # message(STATUS "TORCH_LIBRARIES: ${TORCH_LIBRARIES}")

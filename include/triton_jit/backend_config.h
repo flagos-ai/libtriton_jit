@@ -34,6 +34,8 @@
 #include "triton_jit/backends/gcu_backend.h"
 #elif defined(BACKEND_HCU)
 #include "triton_jit/backends/hcu_backend.h"
+#elif defined(BACKEND_PPU)
+#include "triton_jit/backends/ppu_backend.h"
 #else
 #include "triton_jit/backends/cuda_backend.h"
 #endif
@@ -71,6 +73,10 @@ using DefaultBackend = GcuBackend;
 #elif defined(BACKEND_HCU)
 /// Default backend for HCU (Hygon, HIP-compatible)
 using DefaultBackend = HcuBackend;
+
+#elif defined(BACKEND_PPU)
+/// Default backend for PPU (T-Head XuanTie GPU)
+using DefaultBackend = PpuBackend;
 
 #else
 // Default to CUDA if no backend specified

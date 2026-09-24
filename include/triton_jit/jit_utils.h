@@ -45,6 +45,8 @@
 #elif defined(BACKEND_GCU)
 #elif defined(BACKEND_HCU)
 #include <hip/hip_runtime.h>
+#elif defined(BACKEND_PPU)
+#include <hggc.h>
 #else
 #include "cuda.h"
 #endif
@@ -303,6 +305,23 @@ inline void __checkHcuErrors(hipError_t code, const char* file, const int line) 
     fprintf(stderr,
             "HCU Runtime API error = %04d from file <%s>, line %i. Detail: <%s>\n",
             static_cast<int>(code),
+            file,
+            line,
+            error_string);
+    throw std::runtime_error(error_string);
+  }
+}
+#elif defined(BACKEND_PPU)
+#define checkHggcErrors(err) __checkHggcErrors(err, __FILE__, __LINE__)
+
+// Error handling function using exceptions instead of exit()
+inline void __checkHggcErrors(HGresult code, const char* file, const int line) {
+  if (code != HGGC_SUCCESS) {
+    const char* error_string;
+    hgGetErrorString(code, &error_string);
+    fprintf(stderr,
+            "HGGC Driver API error = %04d from file <%s>, line %i. Detail: <%s>\n",
+            code,
             file,
             line,
             error_string);

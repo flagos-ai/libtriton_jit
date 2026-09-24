@@ -63,6 +63,9 @@ NpuKernelMetadata load_npu_metadata(const std::string& dir, const std::string& k
     nlohmann::json j = nlohmann::json::parse(f);
     meta.shared = j.value("shared", 0u);
     meta.mix_mode = j.value("mix_mode", std::string("mix"));
+    if (j.contains("enable_auto_blockify") && !j["enable_auto_blockify"].is_null()) {
+      meta.enable_auto_blockify = j["enable_auto_blockify"].get<bool>();
+    }
 
     if (j.contains("workspace_size")) {
       meta.workspace_size = j["workspace_size"].get<size_t>();
