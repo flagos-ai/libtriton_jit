@@ -12,7 +12,7 @@
 
 Name:           libtriton-jit-%{vendor_flavor}
 Version:        0.1.0
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Triton JIT runtime library
 
 License:        MIT
@@ -84,6 +84,11 @@ find %{buildroot}%{_libdir} -name "*.so*" -type f -exec patchelf --remove-rpath 
 %{_libdir}/cmake/TritonJIT/
 
 %changelog
+* Thu Sep 24 2026 The FlagOS Contributors <contact@flagos.io> - 0.1.0-4
+- Resolve the kernel script directory under the Debian multiarch layout (multi-level probe, TRITON_JIT_SCRIPT_DIR override)
+- Multi-backend packaging (vendor-parameterised packaging files)
+- Relax the nlohmann_json floor to 3.10.5
+
 * Fri Aug 07 2026 The FlagOS Contributors <contact@flagos.io> - 0.1.0-3
 - Keep automatic distro runtime dependencies while filtering vendor libraries
 - Pin the validated Python 3.9, PyTorch 2.8, and Triton 3.4 build stack
