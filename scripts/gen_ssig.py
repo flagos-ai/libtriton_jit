@@ -64,8 +64,26 @@ def static_signature(f: triton.runtime.JITFunction):
     )
 
 
+def _resolve_source(source_path: Path) -> Path:
+    """Resolve *source_path*; fall back to a path relative to *gen_ssig.py* when
+    the file does not exist at the given location (e.g. a build-machine absolute
+    path that leaked into the wheel).
+
+    ``gen_ssig.py`` lives at ``<pkg>/share/triton_jit/scripts/gen_ssig.py``
+    and triton source files live at ``<pkg>/ops/<filename>.py``.
+    """
+    if source_path.exists():
+        return source_path
+    # Fallback: look relative to gen_ssig.py — go scripts → triton_jit → share → pkg_root
+    pkg_root = Path(__file__).resolve().parent.parent.parent
+    fallback = pkg_root / "ops" / source_path.name
+    if fallback.exists():
+        return fallback
+    return source_path  # let the original error surface
+
+
 def extract_static_signature(source_path, fn_name):
-    source_path = Path(source_path)
+    source_path = _resolve_source(Path(source_path))
     spec = importlib.util.spec_from_file_location(source_path.stem, source_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -113,7 +131,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # execute python sources and extract functions wrapped in JITFunction
-    arg_path = Path(args.path).expanduser()
-    arg_types = extract_static_signature(arg_path, args.kernel_name)
+    arg_types = extract_static_signature(Path(args.path).expanduser(), args.kernel_name)
 
     print(arg_types)
