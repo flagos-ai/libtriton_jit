@@ -1,3 +1,12 @@
+libtriton-jit (0.1.0-4) unstable; urgency=medium
+
+  * Resolve the kernel script directory under the Debian multiarch install
+    layout (multi-level probe + TRITON_JIT_SCRIPT_DIR override).
+  * Multi-backend packaging (vendor-parameterised control/rules).
+  * Relax the nlohmann_json floor to 3.10.5.
+
+ -- The FlagOS Contributors <contact@flagos.io>  Thu, 24 Sep 2026 12:00:00 +0900
+
 libtriton-jit (0.1.0-3) unstable; urgency=medium
 
   * Generate distro runtime dependencies instead of swallowing shlib errors.
