@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,7 @@ struct NpuKernelMetadata {
   std::string mix_mode;
   std::vector<NpuArgInfo> arg_layout;
   size_t workspace_size = 0;
+  std::optional<bool> enable_auto_blockify;
 
   bool has_arg_layout() const {
     return !arg_layout.empty();

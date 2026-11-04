@@ -20,6 +20,9 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -54,6 +57,8 @@ struct NpuBackend {
     const std::vector<NpuArgInfo>* arg_layout = nullptr;
     size_t num_args = 0;
     size_t workspace_size = 0;
+    bool enable_auto_blockify = false;
+    bool vector_kernel = true;
   };
 
   struct ModuleData {
@@ -76,6 +81,17 @@ struct NpuBackend {
     const auto* metadata = get_kernel_metadata(dir, name);
     const auto* layout = (metadata && metadata->has_arg_layout()) ? &(metadata->arg_layout) : nullptr;
     size_t ws_size = metadata ? metadata->workspace_size : 0;
+    // Match FlagTree Ascend's launcher: per-kernel metadata takes precedence
+    // over TRITON_ALL_BLOCKS_PARALLEL. Ordinary kernels need the full logical
+    // grid; only auto-blockified kernels loop over the remaining programs.
+    const char* setting = std::getenv("TRITON_ALL_BLOCKS_PARALLEL");
+    std::string value = setting ? setting : "false";
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    bool auto_blockify = value == "true" || value == "1";
+    if (metadata && metadata->enable_auto_blockify.has_value()) {
+      auto_blockify = *metadata->enable_auto_blockify;
+    }
 
     VLOG(1) << fmt::format("NpuBackend::prepare_launch: kernel={}, metadata={}, workspace_size={}",
                            name,
@@ -88,6 +104,8 @@ struct NpuBackend {
         .arg_layout = layout,
         .num_args = num_args,
         .workspace_size = ws_size,
+        .enable_auto_blockify = auto_blockify,
+        .vector_kernel = metadata && metadata->mix_mode == "aiv",
     };
   }
 
@@ -185,11 +203,15 @@ struct NpuBackend {
         grid_z,
         workspace_addr ? fmt::format("{}B", opts.workspace_size * blockNum) : "none");
 
-    // Limit blockNum to the available AIV parallel blocks.
-    // Excessive blockNum may cause redundant Triton program execution.
-    uint32_t ai_core_cnt = 0;
-    if (rtGetAiCoreCount(&ai_core_cnt) == RT_ERROR_NONE && ai_core_cnt > 0) {
-      blockNum = std::min(blockNum, ai_core_cnt * 2);
+    // A physical-core clamp without compiler-generated auto-blockify loops
+    // silently drops all logical programs beyond the clamp.
+    if (opts.enable_auto_blockify) {
+      uint32_t ai_core_cnt = 0;
+      if (rtGetAiCoreCount(&ai_core_cnt) != RT_ERROR_NONE || ai_core_cnt == 0) {
+        if (workspace_addr) rtFree(workspace_addr);
+        throw std::runtime_error("Cannot determine physical block count for auto-blockified kernel");
+      }
+      blockNum = std::min(blockNum, ai_core_cnt * (opts.vector_kernel ? 2u : 1u));
     }
 
     // Launch kernel

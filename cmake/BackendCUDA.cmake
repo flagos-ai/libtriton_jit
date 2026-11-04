@@ -22,7 +22,7 @@
 # CUDA/IX Backend Configuration
 # ==============================================================================
 
-message(STATUS "Configuring CUDA backend...")
+message(STATUS "Configuring CUDA/IX backend...")
 
 find_package(CUDAToolkit REQUIRED COMPONENTS cuda_driver)
 message(STATUS "Found CUDA Toolkit: ${CUDAToolkit_VERSION}")
