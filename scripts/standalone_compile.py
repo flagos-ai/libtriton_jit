@@ -24,7 +24,9 @@ import json
 import linecache
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import tokenize
 from argparse import ArgumentParser
 from pathlib import Path
@@ -34,6 +36,14 @@ from typing import List, Tuple, Union
 backend_env = os.environ.get("TRITON_JIT_BACKEND", "").upper()
 if backend_env in ["NPU", "MTGPU", "MACA", "GCU", "MLU"]:
     os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+
+# Also support callers loading this helper by absolute file path.
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from _backend_init import initialize_backend  # noqa: E402
+
+initialize_backend()
 
 import torch  # noqa: E402
 
@@ -66,6 +76,32 @@ def get_backend():
 # do not specifier a cache dir for libtriton jit now
 # pylint: disable-next=wrong-import-position
 triton_version = Version(triton.__version__)
+
+# Signature hint emitted by the C++ side (ptr_range_spec) for a pointer whose
+# addressable extent is at most INT32_MAX bytes.
+_POINTER_RANGE_32 = "range32"
+
+
+def _pointer_range_supported() -> bool:
+    """Whether a "range32" hint should become tt.pointer_range = 32.
+
+    The native runtime adds that attribute through the HCU backend's "S"
+    specialization, and only while buffer ops are enabled
+    (AMDGCN_USE_BUFFER_OPS). Follow the same switch so the C++ path never
+    specializes a kernel the Python path would not.
+    """
+    if get_backend() != "HCU" or triton_version.release[:2] < (3, 3):
+        return False
+    knobs = getattr(triton, "knobs", None)
+    for name in ("hcu", "amd"):
+        backend_knobs = getattr(knobs, name, None)
+        if backend_knobs is not None and hasattr(backend_knobs, "use_buffer_ops"):
+            return bool(backend_knobs.use_buffer_ops)
+    # Without a knobs entry, read the switch directly and only accept "1"; when
+    # in doubt the worst case is a missed optimization, never an unwarranted
+    # attribute.
+    return os.environ.get("AMDGCN_USE_BUFFER_OPS", "0") == "1"
+
 
 DESC = """
 Script to compile Triton Jit functions into Compiled Kernel and cache it into a cache dir.
@@ -416,7 +452,8 @@ def kernel_suffix(signature, specialization):
 def _coerce_opt(v):
     """Coerce a string option value coming from the C++ CompileOptions.extra map into
     the type triton.compile expects (int / float / bool), else keep it as a string.
-    C++ can only hand us strings, but options like num_ctas are ints and some are bools."""
+    C++ can only hand us strings, but options like num_ctas are ints and some are bools.
+    """
     if not isinstance(v, str):
         return v
     low = v.strip().lower()
@@ -496,15 +533,34 @@ def _compile_a_kernel(
         if i not in constants
     }
 
-    # specialization: divisibility by 16 or equal to 1
-    hints = {
-        i: constexpr(s.rsplit(":", 1)[1])
-        for i, s in enumerate(signature)
-        if i not in constants and ":" in s
-    }
-    hints = {k: v for k, v in hints.items() if v is not None}
-    for h in hints.values():
-        assert h in [1, 16], f"Only 1 and 16 are valid hints, got {h}"
+    # specialization: divisibility by 16 or equal to 1, plus the HCU-only pointer
+    # range hint. A pointer token may carry both, e.g. "*fp32:16:range32".
+    hints = {}
+    pointer_range_32 = []
+    for i, s in enumerate(signature):
+        if i in constants or ":" not in s:
+            continue
+        type_part, *spec_parts = s.split(":")
+        for part in spec_parts:
+            if part == _POINTER_RANGE_32:
+                if not type_part.startswith("*"):
+                    raise ValueError(
+                        f"{_POINTER_RANGE_32} is only valid on a pointer, got {s}"
+                    )
+                if i in pointer_range_32:
+                    raise ValueError(f"duplicate {_POINTER_RANGE_32} in {s}")
+                pointer_range_32.append(i)
+                continue
+            h = constexpr(part)
+            if h is None:
+                continue
+            assert h in [1, 16], f"Only 1 and 16 are valid hints, got {h}"
+            assert i not in hints, f"duplicate specialization hint in {s}"
+            hints[i] = h
+    if pointer_range_32 and not _pointer_range_supported():
+        # The hint is part of the signature (and so of the C++ cache key) either
+        # way; it only becomes an attribute when the backend would add one itself.
+        pointer_range_32 = []
     divisible_by_16 = tuple(i for i, h in hints.items() if h == 16)
     equal_to_1 = tuple(i for i, h in hints.items() if h == 1)
 
@@ -537,6 +593,17 @@ def _compile_a_kernel(
             "about supporting your triton version. Triton 3.1/3.2/3.3/3.4/3.5/3.6 are supported now."
         )
 
+    # Same attribute the HCU backend's parse_attr derives from its "S"
+    # specialization for a tensor; _pointer_range_supported() guarantees the
+    # dict-style attrs of Triton >= 3.3 here.
+    for i in pointer_range_32:
+        attrs.setdefault((i,), []).append(["tt.pointer_range", 32])
+    if pointer_range_32:
+        # ASTSource.hash() serializes attrs with str(), so key order is part of
+        # the compilation cache key. The native runtime lists arguments in
+        # order; a range-only pointer appended above would otherwise come last.
+        attrs = dict(sorted(attrs.items()))
+
     # integer 1 in value, but the corresponding ArgType in static signature is not constexpr are added into constants
     for i in equal_to_1:
         constants.update({i: 1})
@@ -560,7 +627,9 @@ def _compile_a_kernel(
     # (GCU hardware/compiler does not support double precision operations)
     if get_backend() == "GCU":
         for k in signature_without_spec:
-            signature_without_spec[k] = _normalize_gcu_signature(signature_without_spec[k])
+            signature_without_spec[k] = _normalize_gcu_signature(
+                signature_without_spec[k]
+            )
 
     if Version("3.0.0") <= triton_version < Version("3.2.0"):
         src = triton.compiler.ASTSource(
@@ -613,10 +682,38 @@ def _compile_a_kernel(
 
     # STEP3: ast source, target, compile options (backend-specific)
     backend = get_backend()
+    if backend == "NPU" and opts.get("enable_auto_blockify") is None:
+        # Ascend otherwise resolves this environment variable after computing
+        # the compilation cache key. Make the effective mode an explicit option
+        # so that both the binary's cache key and its metadata preserve it.
+        opts["enable_auto_blockify"] = os.getenv(
+            "TRITON_ALL_BLOCKS_PARALLEL", "false"
+        ).lower() in ("true", "1")
     if backend in ["NPU", "MUSA", "MTGPU", "MACA", "GCU"]:
         # NPU/MUSA/MTGPU/MACA/GCU: no CUDA device context manager
         target = triton.runtime.driver.active.get_current_target()
-        ccinfo = triton.compile(src, target=target, options=opts)
+        if backend == "NPU":
+            # Some Ascend compiler stages still consult only the environment,
+            # even when the launcher honors the per-kernel option. The public
+            # entry point isolates conflicting overrides in a child process.
+            environment_mode = os.getenv(
+                "TRITON_ALL_BLOCKS_PARALLEL", "false"
+            ).lower() in ("true", "1")
+            if opts["enable_auto_blockify"] != environment_mode:
+                raise ValueError(
+                    "Use compile_a_kernel for an NPU auto-blockify override"
+                )
+            from triton._C.libtriton import get_cache_invalidating_env_vars
+
+            env_vars = dict(get_cache_invalidating_env_vars())
+            # Also separate these artifacts from native/legacy cache entries
+            # whose metadata option may disagree with the generated binary.
+            env_vars["TRITON_ALL_BLOCKS_PARALLEL"] = "1" if environment_mode else "0"
+            ccinfo = triton.compile(
+                src, target=target, options=opts, _env_vars=env_vars
+            )
+        else:
+            ccinfo = triton.compile(src, target=target, options=opts)
     elif backend in ["MLU"]:
         # torch_mlu only registers torch.mlu when initialization sees CPU.
         # The embedded C++ runtime has already activated MLU, so re-run
@@ -628,17 +725,15 @@ def _compile_a_kernel(
             torch.accelerator.current_accelerator = lambda *args, **kwargs: None
             try:
                 _sys.modules.pop("torch_mlu", None)
-                import torch_mlu  # noqa: F401
+                import torch_mlu  # noqa: F401, F811 - Re-register after removing the cached module.
             finally:
                 torch.accelerator.current_accelerator = _orig_cur
             if not hasattr(torch, "mlu"):
-                raise RuntimeError(
-                    "failed to register torch.mlu for MLU triton driver"
-                )
+                raise RuntimeError("failed to register torch.mlu for MLU triton driver")
 
         target = triton.runtime.driver.active.get_current_target()
-        opts['is_linear_hint'] = True
-        opts['restrict_ptr_hint'] = True
+        opts["is_linear_hint"] = True
+        opts["restrict_ptr_hint"] = True
         mlu_backend = triton.compiler.make_backend(target)
         opts = mlu_backend.parse_options(opts)
         ccinfo = triton.compile(src, target=target, options=opts.__dict__)
@@ -744,6 +839,42 @@ def compile_a_kernel(
     device_id: int = 0,
     extra_options: dict = None,
 ):
+    if get_backend() == "NPU":
+        options = _merge_compile_options(num_warps, num_stages, extra_options)
+        enabled = options.get("enable_auto_blockify")
+        environment_mode = os.getenv("TRITON_ALL_BLOCKS_PARALLEL", "false").lower() in (
+            "true",
+            "1",
+        )
+        if enabled is not None and not isinstance(enabled, bool):
+            raise ValueError("enable_auto_blockify must be a boolean")
+        if enabled is not None and enabled != environment_mode:
+            # Do not temporarily change os.environ in this process: other
+            # threads may be compiling native Triton kernels concurrently.
+            with tempfile.TemporaryDirectory(prefix="triton-jit-npu-") as temporary:
+                result_path = Path(temporary) / "cache_path.txt"
+                request = {
+                    "source_path": str(Path(source_path).resolve()),
+                    "fn_name": fn_name,
+                    "signature": signature,
+                    "num_warps": num_warps,
+                    "num_stages": num_stages,
+                    "device_id": device_id,
+                    "extra_options": extra_options,
+                    "python_path": sys.path,
+                    "result_path": str(result_path),
+                }
+                subprocess.run(
+                    [sys.executable, str(Path(_SCRIPT_DIR) / "_npu_compile_worker.py")],
+                    input=json.dumps(request),
+                    text=True,
+                    check=True,
+                    env={
+                        **os.environ,
+                        "TRITON_ALL_BLOCKS_PARALLEL": "1" if enabled else "0",
+                    },
+                )
+                return result_path.read_text()
     # get jit function
     source_path = Path(source_path)
     spec = importlib.util.spec_from_file_location(source_path.stem, source_path)
@@ -755,7 +886,9 @@ def compile_a_kernel(
     while not (type(fn) is triton.runtime.JITFunction):
         fn = fn.fn
 
-    return _compile_a_kernel(fn, signature, num_warps, num_stages, device_id, extra_options)
+    return _compile_a_kernel(
+        fn, signature, num_warps, num_stages, device_id, extra_options
+    )
 
 
 if __name__ == "__main__":

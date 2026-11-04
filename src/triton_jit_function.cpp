@@ -33,7 +33,7 @@
 
 namespace triton_jit {
 
-static void ensure_initialized() {
+void ensure_initialized() {
   // Use std::call_once to ensure initialization happens only once
   static std::once_flag init_flag;
   std::call_once(init_flag, []() {
@@ -95,7 +95,8 @@ TritonJITFunctionImpl<Backend>::TritonJITFunctionImpl(std::string_view path, std
 template <BackendPolicy Backend>
 const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std::string_view _signature,
                                                                             const CompileOptions& opts,
-                                                                            int device_index) const {
+                                                                            int device_index,
+                                                                            void* stream) const {
   std::string signature(_signature);
   // The cache key must encode everything that changes the compiled artifact. The old
   // key was just "{signature};{device_index}", so two launches that differed only in
@@ -103,8 +104,16 @@ const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std:
   // silently reused the first one's binary. Fold those compile options into the key.
   std::string key = detail::make_kernel_cache_key(signature, device_index, opts);
 
-  auto pos = this->overloads_.find(key);
-  if (pos == this->overloads_.end()) {
+  {
+    std::lock_guard<std::mutex> lock(overloads_mu_);
+    auto pos = this->overloads_.find(key);
+    if (pos != this->overloads_.end()) return pos->second;
+  }
+  {
+    // Fail fast instead of compiling (and entering Python) while frozen or
+    // while the launch stream is being captured into a graph.
+    detail::refuse_if_frozen(stream,
+                             fmt::format("{}:{} [{}]", this->file_path_, this->function_name_, signature));
     if (std::getenv("LTJ_DUMP_KEY")) {
       fmt::print(stderr, "[LTJ_CACHE_MISS] key={}\n", key);
     }
@@ -124,8 +133,13 @@ const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std:
       for (const auto& kv : opts.extra) {
         extra_dict[py::str(kv.first)] = py::str(kv.second);
       }
-      ans = fn(this->file_path_, this->function_name_, signature, opts.num_warps, opts.num_stages,
-               device_index, extra_dict);
+      ans = fn(this->file_path_,
+               this->function_name_,
+               signature,
+               opts.num_warps,
+               opts.num_stages,
+               device_index,
+               extra_dict);
     } catch (const py::error_already_set& e) {
       std::cerr << "Python exception: " << e.what() << std::endl;
       throw;
@@ -134,14 +148,10 @@ const TritonKernelImpl<Backend>& TritonJITFunctionImpl<Backend>::get_kernel(std:
     std::string cache_dir = ans.cast<std::string>();
     TritonKernelImpl<Backend> k(cache_dir, this->function_name_);
 
-    auto result = this->overloads_.emplace(std::move(key), std::move(k));
-    if (result.second) {
-      pos = result.first;
-    } else {
-      throw std::runtime_error("Unable to emplace the kernel into TritonJITFunctionImpl's cache");
-    }
+    std::lock_guard<std::mutex> lock(overloads_mu_);
+    auto result = this->overloads_.try_emplace(std::move(key), std::move(k));
+    return result.first->second;
   }
-  return pos->second;
 }
 
 }  // namespace triton_jit
@@ -177,7 +187,9 @@ template class triton_jit::TritonJITFunctionImpl<triton_jit::GcuBackend>;
 
 namespace {
 struct GcuLibAutoInit {
-  GcuLibAutoInit() { triton_jit::ensure_initialized(); }
+  GcuLibAutoInit() {
+    triton_jit::ensure_initialized();
+  }
 };
 static GcuLibAutoInit gcu_lib_auto_init_;
 }  // namespace

@@ -64,46 +64,46 @@ struct CompileOptions {
 
 namespace detail {
 
-inline void validate_compile_options(const CompileOptions& opts) {
-  for (const char* reserved : {"num_warps", "num_stages"}) {
-    if (opts.extra.find(reserved) != opts.extra.end()) {
-      throw std::invalid_argument(std::string("CompileOptions.extra must not override reserved option '") +
-                                  reserved + "'");
+  inline void validate_compile_options(const CompileOptions& opts) {
+    for (const char* reserved : {"num_warps", "num_stages"}) {
+      if (opts.extra.find(reserved) != opts.extra.end()) {
+        throw std::invalid_argument(std::string("CompileOptions.extra must not override reserved option '") +
+                                    reserved + "'");
+      }
     }
   }
-}
 
-inline void append_cache_key_field(std::string& key, std::string_view value) {
-  key += std::to_string(value.size());
-  key.push_back(':');
-  key.append(value.begin(), value.end());
-}
-
-inline std::string make_kernel_cache_key(std::string_view signature,
-                                         int device_index,
-                                         const CompileOptions& opts) {
-  validate_compile_options(opts);
-
-  std::string key;
-  key.reserve(signature.size() + opts.extra.size() * 24 + 64);
-  key += "sig=";
-  append_cache_key_field(key, signature);
-  key += ";dev=";
-  append_cache_key_field(key, std::to_string(device_index));
-  key += ";nw=";
-  append_cache_key_field(key, std::to_string(opts.num_warps));
-  key += ";ns=";
-  append_cache_key_field(key, std::to_string(opts.num_stages));
-  key += ";extra=";
-  append_cache_key_field(key, std::to_string(opts.extra.size()));
-  for (const auto& [name, value] : opts.extra) {
-    key += ";name=";
-    append_cache_key_field(key, name);
-    key += ";value=";
-    append_cache_key_field(key, value);
+  inline void append_cache_key_field(std::string& key, std::string_view value) {
+    key += std::to_string(value.size());
+    key.push_back(':');
+    key.append(value.begin(), value.end());
   }
-  return key;
-}
+
+  inline std::string make_kernel_cache_key(std::string_view signature,
+                                           int device_index,
+                                           const CompileOptions& opts) {
+    validate_compile_options(opts);
+
+    std::string key;
+    key.reserve(signature.size() + opts.extra.size() * 24 + 64);
+    key += "sig=";
+    append_cache_key_field(key, signature);
+    key += ";dev=";
+    append_cache_key_field(key, std::to_string(device_index));
+    key += ";nw=";
+    append_cache_key_field(key, std::to_string(opts.num_warps));
+    key += ";ns=";
+    append_cache_key_field(key, std::to_string(opts.num_stages));
+    key += ";extra=";
+    append_cache_key_field(key, std::to_string(opts.extra.size()));
+    for (const auto& [name, value] : opts.extra) {
+      key += ";name=";
+      append_cache_key_field(key, name);
+      key += ";value=";
+      append_cache_key_field(key, value);
+    }
+    return key;
+  }
 
 }  // namespace detail
 
@@ -154,6 +154,23 @@ constexpr const char* spec(T v) {
 template <typename T>
 constexpr const char* ptr_spec(T v) {
   return v % 16 == 0 ? ":16" : "";
+}
+
+// Pointer-range specialization, the counterpart of the HCU backend's "S"
+// specialization in the native Python runtime (HIPBackend.is_within_2gb): a
+// pointer whose addressable extent fits in a signed 32-bit offset is tagged
+// ":range32", which standalone_compile turns into tt.pointer_range = 32 so the
+// kernel can use buffer instructions. Only HCU emits it; every other backend
+// keeps the plain pointer token. Whether the attribute is finally applied also
+// depends on the backend's buffer-ops switch, which standalone_compile checks.
+constexpr std::uint64_t kPointerRange32Max = 2147483647ULL;  // INT32_MAX
+
+constexpr const char* ptr_range_spec([[maybe_unused]] std::uint64_t extent_bytes) {
+#if defined(BACKEND_HCU)
+  return extent_bytes <= kPointerRange32Max ? ":range32" : "";
+#else
+  return "";
+#endif
 }
 
 template <typename T, typename = void>
@@ -232,6 +249,11 @@ constexpr const char* narrow_type_name(const T& v) {
 // path of python executable
 std::filesystem::path get_script_dir();
 
+// Bring up the embedded interpreter the way the runtime does (TRITON_JIT_BACKEND
+// in os.environ, vendor torch modules imported). Idempotent; safe to call
+// before touching Python from a consumer.
+void ensure_initialized();
+
 #ifdef BACKEND_NPU
 // ACL error checking function
 inline void checkAclErrors(aclError code, const char* message = "") {
@@ -281,14 +303,15 @@ inline void __checkMacaErrors(mcError_t code, const char* file, const int line) 
 
 // Error handling function using exceptions instead of exit()
 inline void __checkMluErrors(CNresult code, const char* file, const int line) {
-  if (code != CN_SUCCESS){
+  if (code != CN_SUCCESS) {
     const char* error_string;
     cnGetErrorString(code, &error_string);
-    fprintf(stderr, "MLU Driver API error = %04d from file <%s>, line %i. Detail: <%s>\n",
-        code,
-        file,
-        line,
-        error_string);
+    fprintf(stderr,
+            "MLU Driver API error = %04d from file <%s>, line %i. Detail: <%s>\n",
+            code,
+            file,
+            line,
+            error_string);
     throw std::runtime_error(error_string);
   }
 }

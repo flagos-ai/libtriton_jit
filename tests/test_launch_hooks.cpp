@@ -55,6 +55,7 @@ struct FakeBackend {
 
   static constexpr unsigned int WARP_SIZE = 32;
   inline static std::atomic<int> launch_count {0};
+  inline static std::atomic<int> load_count {0};
   inline static std::atomic<bool> throw_on_launch {false};
 
   static void launch_kernel(StreamType,
@@ -81,6 +82,7 @@ struct FakeBackend {
   }
 
   static KernelHandle load_kernel(const std::string&, const std::string&) {
+    ++load_count;
     return 1;
   }
 
@@ -88,16 +90,14 @@ struct FakeBackend {
     return 128;
   }
 
-  static LaunchOptions prepare_launch(const std::string&,
-                                      const std::string&,
-                                      unsigned int,
-                                      const std::string&,
-                                      size_t) {
+  static LaunchOptions prepare_launch(
+      const std::string&, const std::string&, unsigned int, const std::string&, size_t) {
     return 0;
   }
 
   static void reset() {
     launch_count = 0;
+    load_count = 0;
     throw_on_launch = false;
   }
 };
@@ -130,12 +130,8 @@ void test_concurrent_setters_do_not_lose_updates() {
   for (int iteration = 0; iteration < 1000; ++iteration) {
     triton_jit::clear_launch_hooks();
 
-    std::thread enter([] {
-      triton_jit::set_launch_enter_hook([](const triton_jit::LaunchMetadata&) {});
-    });
-    std::thread exit([] {
-      triton_jit::set_launch_exit_hook([](const triton_jit::LaunchMetadata&) {});
-    });
+    std::thread enter([] { triton_jit::set_launch_enter_hook([](const triton_jit::LaunchMetadata&) {}); });
+    std::thread exit([] { triton_jit::set_launch_exit_hook([](const triton_jit::LaunchMetadata&) {}); });
     enter.join();
     exit.join();
 
@@ -160,10 +156,10 @@ void test_reentrant_clear_keeps_current_snapshot() {
     captured = metadata;
     triton_jit::clear_launch_hooks();
   });
-  triton_jit::set_launch_exit_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++exit_count; });
+  triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata&) { ++exit_count; });
 
   FakeKernel kernel("unused", "fake_kernel");
+  kernel.prepare();  // The hook token below is not a CUDA stream; avoid a cold driver query.
   kernel.launch_with_signature(2, 3, 4, 5, stream, nullptr, "*fp32:16,i32", 2);
 
   REQUIRE(enter_count == 1);
@@ -191,8 +187,7 @@ void test_enter_exception_prevents_launch() {
 
   triton_jit::set_launch_enter_hook(
       [](const triton_jit::LaunchMetadata&) { throw std::runtime_error("enter failed"); });
-  triton_jit::set_launch_exit_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++exit_count; });
+  triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata&) { ++exit_count; });
 
   bool caught = false;
   try {
@@ -213,10 +208,8 @@ void test_backend_exception_skips_exit() {
   int enter_count = 0;
   int exit_count = 0;
 
-  triton_jit::set_launch_enter_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++enter_count; });
-  triton_jit::set_launch_exit_hook(
-      [&](const triton_jit::LaunchMetadata&) { ++exit_count; });
+  triton_jit::set_launch_enter_hook([&](const triton_jit::LaunchMetadata&) { ++enter_count; });
+  triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata&) { ++exit_count; });
 
   bool caught = false;
   try {
@@ -249,10 +242,41 @@ void test_exit_exception_follows_launch() {
   REQUIRE(FakeBackend::launch_count == 1);
 }
 
+void test_prepare_loads_without_launch() {
+  HooksGuard guard;
+  FakeBackend::reset();
+  FakeKernel kernel("unused", "prepared");
+  REQUIRE(!kernel.is_loaded());
+  {
+    triton_jit::ScopedFreeze frozen;
+    bool refused = false;
+    try {
+      kernel.prepare();
+    } catch (const triton_jit::FrozenMissError& error) {
+      refused = error.work() == triton_jit::ColdWork::kProgram;
+    }
+    REQUIRE(refused);
+    REQUIRE(FakeBackend::load_count == 0);
+  }
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) threads.emplace_back([&] { kernel.prepare(); });
+  for (auto& thread : threads) thread.join();
+  REQUIRE(kernel.is_loaded());
+  REQUIRE(FakeBackend::load_count == 1);
+  REQUIRE(FakeBackend::launch_count == 0);
+  {
+    triton_jit::ScopedFreeze frozen;
+    kernel.launch(1, 1, 1, 1, nullptr, nullptr);
+  }
+  REQUIRE(FakeBackend::load_count == 1);
+  REQUIRE(FakeBackend::launch_count == 1);
+}
+
 }  // namespace
 
 int main() {
   try {
+    test_prepare_loads_without_launch();
     test_setters_preserve_both_hooks();
     test_clear_removes_snapshot();
     test_concurrent_setters_do_not_lose_updates();

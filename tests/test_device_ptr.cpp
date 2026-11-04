@@ -199,6 +199,101 @@ int main() {
     expect(no_alignment.abi_args == 1, "do_not_specialize_on_alignment keeps the pointer in the runtime ABI");
   }
 
+  // ---- pointer range (HCU's native "S" specialization) --------------------
+  // Expected tokens follow what the native Python runtime specializes on HCU
+  // (tt.divisibility / tt.pointer_range on the TTIR argument):
+  //   default -> ":16" + range, misaligned -> range only,
+  //   do_not_specialize_on_alignment -> range only, do_not_specialize -> none.
+#if defined(BACKEND_HCU)
+  const bool kRange = true;
+#else
+  const bool kRange = false;
+#endif
+  auto with_range = [&](const char* token) { return std::string(token) + (kRange ? ":range32" : ""); };
+  {
+    const TritonDevicePtr aligned = device_ptr<float>(kAligned);
+    const std::uint64_t kMax = 2147483647ULL;  // INT32_MAX
+
+    const Emitted at_max = emit(one_specialized, with_pointer_range(aligned, kMax));
+    expect_token(at_max,
+                 0,
+                 with_range(kAlignedPtr).c_str(),
+                 "an extent of INT32_MAX bytes takes the range hint");
+    expect(at_max.abi_args == 1 && at_max.consumed == 1, "the extent is metadata and never enters the ABI");
+
+    const Emitted misaligned =
+        emit(one_specialized, with_pointer_range(device_ptr<float>(kMisaligned), 1024));
+    expect_token(misaligned, 0, with_range("*fp32").c_str(), "the range hint is independent of alignment");
+
+    expect_token(emit(one_specialized, with_pointer_range(aligned, kMax + 1)),
+                 0,
+                 kAlignedPtr,
+                 "an extent of 2 GiB does not fit a signed 32-bit offset");
+    expect_token(emit(one_specialized, with_pointer_range(aligned, 0)),
+                 0,
+                 kAlignedPtr,
+                 "an unknown (zero) extent must not narrow the range");
+
+    expect_token(emit({ArgType::SPECIALIZED_NO_ALIGNMENT}, with_pointer_range(aligned, 1024)),
+                 0,
+                 with_range("*fp32").c_str(),
+                 "do_not_specialize_on_alignment keeps the range hint, like Python");
+    expect_token(emit({ArgType::NON_CONSTEXPR}, with_pointer_range(aligned, 1024)),
+                 0,
+                 "*fp32",
+                 "do_not_specialize suppresses the range hint too");
+
+    const Emitted opt =
+        emit(one_specialized, std::optional<TritonBoundedDevicePtr> {with_pointer_range(aligned, 64)});
+    expect_token(opt,
+                 0,
+                 with_range(kAlignedPtr).c_str(),
+                 "an engaged optional bounded pointer behaves like one");
+  }
+  {
+    // A tensor's extent is its whole storage, as untyped_storage().size() is
+    // in the native runtime -- also for a view that starts past the storage
+    // origin. Meta tensors give large storages without allocating memory.
+    const at::Tensor small = at::empty({1024}, at::kFloat);
+    expect_token(emit(one_specialized, small),
+                 0,
+                 with_range(kAlignedPtr).c_str(),
+                 "a small tensor takes the range hint");
+    expect_token(emit(one_specialized, small.narrow(0, 1, 1023)),
+                 0,
+                 with_range("*fp32").c_str(),
+                 "a misaligned view measures its storage, not the bytes past data_ptr()");
+    expect_token(emit(one_specialized, std::optional<at::Tensor> {small}),
+                 0,
+                 with_range(kAlignedPtr).c_str(),
+                 "an engaged optional tensor behaves like the tensor");
+    // An empty storage (0 bytes, null data) is within range natively too.
+    expect_token(emit(one_specialized, at::empty({0}, at::kFloat)),
+                 0,
+                 with_range(kAlignedPtr).c_str(),
+                 "an empty tensor takes the range hint, like Python");
+    expect_token(emit({ArgType::SPECIALIZED_NO_ALIGNMENT}, small),
+                 0,
+                 with_range("*fp32").c_str(),
+                 "do_not_specialize_on_alignment keeps the tensor range hint");
+    expect_token(emit({ArgType::NON_CONSTEXPR}, small),
+                 0,
+                 "*fp32",
+                 "do_not_specialize suppresses the tensor range hint");
+
+#if !defined(BACKEND_NPU)
+    const auto meta = at::TensorOptions().dtype(at::kByte).device(at::kMeta);
+    expect_token(emit(one_specialized, at::empty({2147483647LL}, meta)),
+                 0,
+                 with_range("*u8:16").c_str(),
+                 "a storage of INT32_MAX bytes takes the range hint");
+    expect_token(emit(one_specialized, at::empty({2147483648LL}, meta)),
+                 0,
+                 "*u8:16",
+                 "a storage of 2 GiB does not");
+#endif
+  }
+
   // ---- optional device pointers ------------------------------------------
   {
     const Emitted present =

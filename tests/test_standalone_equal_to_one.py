@@ -31,8 +31,13 @@ The test intercepts ASTSource instead of compiling, so it needs no device.
 
 import importlib.util
 import sys
+from pathlib import Path
 
-import triton
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from _backend_init import initialize_backend  # noqa: E402
+
+initialize_backend()
+import triton  # noqa: E402
 
 
 class _Captured(Exception):

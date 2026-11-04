@@ -190,6 +190,19 @@ to call operators via the dispatcher.
 
 We have examples of pointwise addition and summation.
 
+### Tuned launch configurations
+
+Use `TunedTable` to load and query configurations exported from Python LibTuner.
+Lookup uses the kernel's source namespace, device and normalized input key;
+a miss leaves the fallback choice to the caller.
+
+`prepare()` compiles and loads a program before freezing or graph capture.
+
+An optional Torch resolver fills cold misses; warm configuration hits stay in C++.
+It serves both `@libtuner` and plain `@triton.autotune` kernels.
+
+See [Autotune usage and contracts](docs/autotune.md) for setup and examples.
+
 ## How to build
 
 ### Install dependencies

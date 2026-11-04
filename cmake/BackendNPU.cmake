@@ -102,8 +102,17 @@ set_target_properties(Ascend::runtime PROPERTIES
 )
 
 # ------------------------------- torch_npu Integration ------------------------
-# Hardcoded path to libtorch_npu
-set(TORCH_NPU_PATH "/data/baai_user_home/chwork/compile_triton/pytorch/libtorch_npu")
+# Discover the extension belonging to the selected Python interpreter.
+set(TORCH_NPU_PATH "$ENV{TORCH_NPU_PATH}" CACHE PATH "torch_npu package directory")
+if(NOT TORCH_NPU_PATH)
+    execute_process(
+        COMMAND ${Python_EXECUTABLE} -c
+            "import importlib.util, os; s = importlib.util.find_spec('torch_npu'); print(os.path.dirname(s.origin) if s and s.origin else '')"
+        OUTPUT_VARIABLE _TORCH_NPU_DISCOVERED
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    set(TORCH_NPU_PATH "${_TORCH_NPU_DISCOVERED}" CACHE PATH "torch_npu package directory" FORCE)
+endif()
 
 if(TORCH_NPU_PATH AND EXISTS "${TORCH_NPU_PATH}")
     message(STATUS "Found torch_npu at: ${TORCH_NPU_PATH}")

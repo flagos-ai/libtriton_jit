@@ -54,16 +54,36 @@ elseif(TritonJIT_BACKEND STREQUAL "NPU")
 
     if(EXISTS ${_ASCEND_TOOLKIT_HOME})
         find_library(_ASCENDCL_LIBRARY ascendcl PATHS ${_ASCEND_TOOLKIT_HOME}/lib64 NO_DEFAULT_PATH)
-        if(_ASCENDCL_LIBRARY AND NOT TARGET Ascend::ascendcl)
-            # Build include directories list
-            set(_ASCEND_INCLUDE_DIRS "${_ASCEND_TOOLKIT_HOME}/include")
-            if(_CANN_HOME AND EXISTS "${_CANN_HOME}/${_ASCEND_ARCH_DIR}/pkg_inc")
-                list(APPEND _ASCEND_INCLUDE_DIRS "${_CANN_HOME}/${_ASCEND_ARCH_DIR}/pkg_inc")
+        find_library(_ASCEND_RUNTIME_LIBRARY runtime PATHS ${_ASCEND_TOOLKIT_HOME}/lib64 NO_DEFAULT_PATH)
+        # Export the same public SDK include paths used by BackendNPU.
+        # Runtime headers also include profiler and toolchain headers.
+        set(_ASCEND_INCLUDE_DIRS
+            "${_ASCEND_TOOLKIT_HOME}/include"
+            "${_ASCEND_TOOLKIT_HOME}/include/aclnn"
+            "${_ASCEND_TOOLKIT_HOME}/include/experiment"
+            "${_ASCEND_TOOLKIT_HOME}/include/experiment/runtime"
+            "${_ASCEND_TOOLKIT_HOME}/${_ASCEND_ARCH_DIR}/include"
+            "${_ASCEND_TOOLKIT_HOME}/${_ASCEND_ARCH_DIR}/include/experiment"
+            "${_ASCEND_TOOLKIT_HOME}/${_ASCEND_ARCH_DIR}/include/experiment/msprof"
+        )
+        if(_CANN_HOME AND EXISTS "${_CANN_HOME}/${_ASCEND_ARCH_DIR}/pkg_inc")
+            list(APPEND _ASCEND_INCLUDE_DIRS "${_CANN_HOME}/${_ASCEND_ARCH_DIR}/pkg_inc")
+            if(EXISTS "${_CANN_HOME}/${_ASCEND_ARCH_DIR}/pkg_inc/runtime/runtime")
+                list(APPEND _ASCEND_INCLUDE_DIRS "${_CANN_HOME}/${_ASCEND_ARCH_DIR}/pkg_inc/runtime/runtime")
             endif()
+        endif()
 
+        if(_ASCENDCL_LIBRARY AND NOT TARGET Ascend::ascendcl)
             add_library(Ascend::ascendcl SHARED IMPORTED)
             set_target_properties(Ascend::ascendcl PROPERTIES
                 IMPORTED_LOCATION ${_ASCENDCL_LIBRARY}
+                INTERFACE_INCLUDE_DIRECTORIES "${_ASCEND_INCLUDE_DIRS}"
+            )
+        endif()
+        if(_ASCEND_RUNTIME_LIBRARY AND NOT TARGET Ascend::runtime)
+            add_library(Ascend::runtime SHARED IMPORTED)
+            set_target_properties(Ascend::runtime PROPERTIES
+                IMPORTED_LOCATION ${_ASCEND_RUNTIME_LIBRARY}
                 INTERFACE_INCLUDE_DIRECTORIES "${_ASCEND_INCLUDE_DIRS}"
             )
         endif()

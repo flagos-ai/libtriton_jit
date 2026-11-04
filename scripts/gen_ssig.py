@@ -19,12 +19,21 @@
 # SOFTWARE.
 
 import importlib.util
+import sys
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-import triton
+# Also support callers loading this helper by absolute file path.
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from _backend_init import initialize_backend  # noqa: E402
+
+initialize_backend()
+
+import triton  # noqa: E402
 
 
 @dataclass

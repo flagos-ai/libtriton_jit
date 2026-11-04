@@ -33,8 +33,13 @@
 //
 // TritonDevicePtr closes that gap by pairing the address with an explicit
 // dtype. It is accepted wherever an at::Tensor is, and yields the same
-// signature token, the same specialization and the same compilation cache
-// entry as the equivalent tensor argument.
+// signature token and the same alignment specialization as the equivalent
+// tensor argument. HCU additionally specializes a tensor on the extent of its
+// storage; a bare pointer carries no extent, so there it matches the tensor
+// only when wrapped with with_pointer_range. Note that a tensor's extent is
+// measured from the start of its storage, a bounded pointer's from the pointer
+// itself: for an offset view, pass the storage extent to get the very same
+// specialization (and compiled kernel) as the tensor.
 //
 // This header intentionally has no torch dependency, so tooling that only
 // needs the dtype vocabulary can include it on its own.
@@ -228,6 +233,38 @@ inline TritonDevicePtr device_ptr(const void* p, TritonDType dtype) {
 /// @overload
 inline TritonDevicePtr device_ptr(std::uintptr_t raw, TritonDType dtype) {
   return TritonDevicePtr {raw, dtype};
+}
+
+/// A device pointer together with the number of bytes the kernel may address
+/// from it, i.e. [pointer.value, pointer.value + size_bytes). The extent is
+/// compile-time metadata only: the runtime ABI is that of the bare pointer.
+///
+/// An at::Tensor carries this extent in its storage; a raw pointer does not,
+/// so a caller that knows it passes it explicitly. On HCU the backend uses the
+/// extent like the native Python runtime does for a tensor: an extent of at
+/// most INT32_MAX bytes lets the kernel use 32-bit buffer addressing
+/// (tt.pointer_range = 32). Other backends ignore it.
+///
+/// The extent is a promise: the kernel must not touch bytes outside it.
+/// size_bytes == 0 means "unknown" and never narrows the range.
+struct TritonBoundedDevicePtr {
+  TritonDevicePtr pointer;
+  std::uint64_t size_bytes;
+};
+
+/**
+ * @brief Attach the accessible byte extent to a device pointer.
+ *
+ * @code
+ * // A is an n x n column-major matrix with leading dimension lda.
+ * // Widen before multiplying: lda * n in int overflows for large matrices, and an
+ * // extent that is too small makes the kernel silently miss data.
+ * triton_jit::with_pointer_range(triton_jit::device_ptr(A),
+ *                                static_cast<std::uint64_t>(lda) * n * sizeof(float));
+ * @endcode
+ */
+inline TritonBoundedDevicePtr with_pointer_range(TritonDevicePtr pointer, std::uint64_t size_bytes) {
+  return TritonBoundedDevicePtr {pointer, size_bytes};
 }
 
 }  // namespace triton_jit

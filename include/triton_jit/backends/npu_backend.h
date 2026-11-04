@@ -54,6 +54,8 @@ struct NpuBackend {
     const std::vector<NpuArgInfo>* arg_layout = nullptr;
     size_t num_args = 0;
     size_t workspace_size = 0;
+    bool enable_auto_blockify = false;
+    std::string mix_mode;
   };
 
   struct ModuleData {
@@ -74,6 +76,11 @@ struct NpuBackend {
                                       const std::string& sig,
                                       size_t num_args) {
     const auto* metadata = get_kernel_metadata(dir, name);
+    if (!metadata || !metadata->enable_auto_blockify.has_value()) {
+      throw std::runtime_error(
+          "NPU kernel metadata is missing a resolved enable_auto_blockify option; "
+          "recompile the kernel with the current standalone_compile.py");
+    }
     const auto* layout = (metadata && metadata->has_arg_layout()) ? &(metadata->arg_layout) : nullptr;
     size_t ws_size = metadata ? metadata->workspace_size : 0;
 
@@ -88,6 +95,8 @@ struct NpuBackend {
         .arg_layout = layout,
         .num_args = num_args,
         .workspace_size = ws_size,
+        .enable_auto_blockify = *metadata->enable_auto_blockify,
+        .mix_mode = metadata->mix_mode,
     };
   }
 
@@ -102,6 +111,21 @@ struct NpuBackend {
                             void** args,
                             const LaunchOptions& opts) {
     uint32_t blockNum = grid_x * grid_y * grid_z;
+    uint32_t launch_blocks = blockNum;
+    if (opts.enable_auto_blockify) {
+      uint32_t ai_cores = 0;
+      const auto status = rtGetAiCoreCount(&ai_cores);
+      if (status != RT_ERROR_NONE || ai_cores == 0) {
+        throw std::runtime_error(
+            fmt::format("Cannot determine NPU physical core count: {}", static_cast<int>(status)));
+      }
+      // Match Ascend's native launcher: auto-blockified kernels contain a
+      // grid-stride loop whose stride is the physical AIV/AIC core count.
+      const uint32_t physical_blocks = opts.mix_mode == "aiv" ? ai_cores * 2 : ai_cores;
+      launch_blocks = std::min(blockNum, physical_blocks);
+    }
+    // Without auto-blockify each logical program needs its own launch block.
+    // Keep the logical grid (and workspace sizing) intact in either mode.
 
     // Get system control address
     rtError_t ret;
@@ -185,16 +209,9 @@ struct NpuBackend {
         grid_z,
         workspace_addr ? fmt::format("{}B", opts.workspace_size * blockNum) : "none");
 
-    // Limit blockNum to the available AIV parallel blocks.
-    // Excessive blockNum may cause redundant Triton program execution.
-    uint32_t ai_core_cnt = 0;
-    if (rtGetAiCoreCount(&ai_core_cnt) == RT_ERROR_NONE && ai_core_cnt > 0) {
-      blockNum = std::min(blockNum, ai_core_cnt * 2);
-    }
-
     // Launch kernel
     rtError_t rt_err = rtKernelLaunch(kernel,
-                                      blockNum,
+                                      launch_blocks,
                                       arg_buffer.data(),
                                       static_cast<uint32_t>(arg_buffer.size()),
                                       nullptr,

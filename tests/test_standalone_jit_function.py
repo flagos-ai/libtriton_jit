@@ -25,7 +25,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-import triton
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from _backend_init import initialize_backend  # noqa: E402
+
+initialize_backend()
+import triton  # noqa: E402
 
 
 def load_module(path):
@@ -69,9 +73,7 @@ def expect_failed_load_restores_registries(
 
     expect_exception(
         exception_type,
-        lambda: module._load_jitfunction(
-            str(source_path), function_name, fingerprint
-        ),
+        lambda: module._load_jitfunction(str(source_path), function_name, fingerprint),
     )
 
     restored_module = sys.modules.get(module_name, missing)
@@ -112,7 +114,9 @@ def main():
         "@jit:2f746d70:61:gggggggggggggggg",
     ]
     for invalid in invalid_tokens:
-        expect_exception(ValueError, lambda value=invalid: module._parse_jitfunction_token(value))
+        expect_exception(
+            ValueError, lambda value=invalid: module._parse_jitfunction_token(value)
+        )
 
     expect_exception(
         ValueError,
@@ -159,10 +163,7 @@ def main():
 
         cycle_path = Path(directory) / "cycle.py"
         cycle_path.write_text(
-            "class Wrapper:\n"
-            "    pass\n"
-            "cycle = Wrapper()\n"
-            "cycle.fn = cycle\n",
+            "class Wrapper:\n" "    pass\n" "cycle = Wrapper()\n" "cycle.fn = cycle\n",
             encoding="utf-8",
         )
         cycle_fingerprint = module._fnv1a64(cycle_path.read_bytes())
