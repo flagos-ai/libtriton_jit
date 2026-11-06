@@ -132,6 +132,29 @@ namespace test {
     device_ = at::Device(at::DeviceType::PrivateUse1, device_id_);
     std::cout << "GCU device " << device_id_ << " initialized" << std::endl;
 
+#elif defined(BACKEND_KUNLUNXIN)
+    // P800 is exposed through PyTorch's CUDA ABI, but device selection must use
+    // the Kunlunxin runtime before any CUDA-ABI tensor operation is issued.
+    int err = xpu_set_device(device_id_);
+    if (err != 0) {
+      std::cerr << "Failed to set Kunlunxin device: " << xpu_strerror(err) << std::endl;
+      return -1;
+    }
+
+    // Load the vendor symbol rewrite before PyTorch's first CUDA-ABI call.
+    if (!Py_IsInitialized()) {
+      interpreter_ = std::make_unique<py::scoped_interpreter>();
+    }
+    try {
+      py::module_::import("torch_xmlir");
+    } catch (const py::error_already_set& e) {
+      std::cerr << "Failed to import torch_xmlir: " << e.what() << std::endl;
+      return -1;
+    }
+
+    device_ = at::Device(at::DeviceType::CUDA, device_id_);
+    std::cout << "Kunlunxin device " << device_id_ << " initialized" << std::endl;
+
 #elif defined(BACKEND_HCU)
     // Initialize HCU (HIP runtime; PyTorch exposes the device as CUDA)
     hipError_t err = hipSetDevice(device_id_);
@@ -181,6 +204,8 @@ namespace test {
     cnrtSyncDevice();
 #elif defined(BACKEND_GCU)
     topsDeviceSynchronize();
+#elif defined(BACKEND_KUNLUNXIN)
+    xpu_wait(nullptr);
 #elif defined(BACKEND_HCU)
     hipDeviceSynchronize();
 #else  // CUDA or IX
@@ -197,6 +222,8 @@ namespace test {
     return "MLU";
 #elif defined(BACKEND_GCU)
     return "GCU";
+#elif defined(BACKEND_KUNLUNXIN)
+    return "KUNLUNXIN";
 #elif defined(BACKEND_HCU)
     return "HCU";
 #elif defined(BACKEND_IX)
@@ -221,6 +248,8 @@ namespace test {
 #elif defined(BACKEND_GCU)
     interpreter_.reset();
     topsDeviceReset();
+#elif defined(BACKEND_KUNLUNXIN)
+    xpu_wait(nullptr);
 #elif defined(BACKEND_HCU)
     hipDeviceReset();
 #else  // CUDA or IX
@@ -283,7 +312,11 @@ namespace test {
     musaMalloc(&ptr, bytes);
     musaMemset(ptr, 0, bytes);
 
-    return at::from_blob(ptr, shape, [](void* p) { musaFree(p); }, options);
+    return at::from_blob(
+        ptr,
+        shape,
+        [](void* p) { musaFree(p); },
+        options);
 #else
     return at::zeros(shape, options);
 #endif
@@ -311,7 +344,11 @@ namespace test {
     size_t bytes = numel * at::elementSize(dtype);
     musaMalloc(&ptr, bytes);
 
-    return at::from_blob(ptr, shape, [](void* p) { musaFree(p); }, options);
+    return at::from_blob(
+        ptr,
+        shape,
+        [](void* p) { musaFree(p); },
+        options);
 #else
     return at::empty(shape, options);
 #endif
@@ -353,7 +390,11 @@ namespace test {
     musaMemcpy(ptr, cpu_tensor.data_ptr(), bytes, musaMemcpyHostToDevice);
 
     auto options = at::TensorOptions().dtype(dtype).device(device_manager_.get_device());
-    return at::from_blob(ptr, shape, [](void* p) { musaFree(p); }, options);
+    return at::from_blob(
+        ptr,
+        shape,
+        [](void* p) { musaFree(p); },
+        options);
 #else
     // Fallback for other backends
     auto options = at::TensorOptions().dtype(dtype).device(device_manager_.get_device());

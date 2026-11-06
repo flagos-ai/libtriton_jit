@@ -28,6 +28,7 @@
 
 #include "ATen/WrapDimUtils.h"
 
+#include "operators/common/kernel_config.h"
 #include "operators/common/backend_ops.h"
 #include "operators/common/op_registration.h"
 
@@ -62,11 +63,8 @@ std::tuple<at::Tensor, at::Tensor> max_dim(const at::Tensor& self, int64_t dim, 
   const TritonJITFunction& f =
       TritonJITFunction::get_instance(std::string("max.py"), "max_with_indices_kernel");
 
-  constexpr int64_t BLOCK_M = 4;
-  constexpr int64_t BLOCK_N = 512;
-  constexpr int num_warps = 8;
-  constexpr int num_stages = 1;
-  const unsigned int num_blocks = (M + BLOCK_M - 1) / BLOCK_M;
+  const auto cfg = triton_jit::ops::default_max_config();
+  const unsigned int num_blocks = (M + cfg.BLOCK_M - 1) / cfg.BLOCK_M;
 
   c10::DeviceGuard guard(self.device());
   triton_jit::ops::RawStream stream = triton_jit::ops::get_device_stream(permuted);
@@ -75,15 +73,15 @@ std::tuple<at::Tensor, at::Tensor> max_dim(const at::Tensor& self, int64_t dim, 
     num_blocks,
     1,
     1,
-    num_warps,
-    num_stages,
+    cfg.num_warps,
+    cfg.num_stages,
     permuted.view({M, N}),
     out_vals,
     out_idx,
     M,
     N,
-    BLOCK_M,
-    BLOCK_N);
+    cfg.BLOCK_M,
+    cfg.BLOCK_N);
 
   // Reshape output - out_shape is already in correct order (original dims except reduced)
   if (!out_shape.empty()) {

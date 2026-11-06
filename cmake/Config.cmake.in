@@ -29,6 +29,37 @@ include(CMakeFindDependencyMacro)
 # Backend-specific dependencies
 if(TritonJIT_BACKEND STREQUAL "CUDA" OR TritonJIT_BACKEND STREQUAL "IX")
     find_dependency(CUDAToolkit REQUIRED)
+elseif(TritonJIT_BACKEND STREQUAL "KUNLUNXIN")
+    find_dependency(CUDAToolkit REQUIRED COMPONENTS cupti)
+    find_path(_KUNLUNXIN_RUNTIME_INCLUDE_DIR
+        NAMES xpu/runtime.h
+        HINTS
+            ${TritonJIT_KUNLUNXIN_ROOT}
+            ENV XRE3_HOME
+            ENV XPU_HOME
+            ENV XPU_SDK_ROOT
+        PATH_SUFFIXES include
+        REQUIRED)
+    find_library(_KUNLUNXIN_RUNTIME_LIBRARY
+        NAMES xpurt xpu_runtime
+        HINTS
+            ${TritonJIT_KUNLUNXIN_ROOT}
+            ENV XRE3_HOME
+            ENV XPU_HOME
+            ENV XPU_SDK_ROOT
+        PATH_SUFFIXES lib lib64 so
+        REQUIRED)
+    if(NOT TARGET Kunlunxin::runtime)
+        add_library(Kunlunxin::runtime UNKNOWN IMPORTED)
+        set_target_properties(Kunlunxin::runtime PROPERTIES
+            IMPORTED_LOCATION "${_KUNLUNXIN_RUNTIME_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_KUNLUNXIN_RUNTIME_INCLUDE_DIR}")
+    endif()
+    if(NOT TARGET Kunlunxin::cupti)
+        add_library(Kunlunxin::cupti UNKNOWN IMPORTED)
+        set_target_properties(Kunlunxin::cupti PROPERTIES
+            IMPORTED_LOCATION "${CUDA_cupti_LIBRARY}")
+    endif()
 elseif(TritonJIT_BACKEND STREQUAL "NPU")
     # Create Ascend imported targets for downstream projects
     set(_ASCEND_TOOLKIT_HOME $ENV{ASCEND_TOOLKIT_HOME})

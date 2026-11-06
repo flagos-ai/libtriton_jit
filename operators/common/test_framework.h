@@ -55,10 +55,15 @@ namespace py = pybind11;
 namespace py = pybind11;
 #define DEVICE_TYPE at::DeviceType::PrivateUse1
 #elif defined(BACKEND_GCU)
-#include <tops_runtime_api.h>
 #include <pybind11/embed.h>
+#include <tops_runtime_api.h>
 namespace py = pybind11;
 #define DEVICE_TYPE at::DeviceType::PrivateUse1
+#elif defined(BACKEND_KUNLUNXIN)
+#include <pybind11/embed.h>
+#include <xpu/runtime.h>
+namespace py = pybind11;
+#define DEVICE_TYPE at::DeviceType::CUDA
 #elif defined(BACKEND_HCU)
 #include <hip/hip_runtime.h>
 #define DEVICE_TYPE at::DeviceType::CUDA
@@ -191,7 +196,7 @@ namespace test {
     int device_id_;
     bool initialized_;
 
-#if defined(BACKEND_MUSA) || defined(BACKEND_MLU) || defined(BACKEND_GCU)
+#if defined(BACKEND_MUSA) || defined(BACKEND_MLU) || defined(BACKEND_GCU) || defined(BACKEND_KUNLUNXIN)
     std::unique_ptr<py::scoped_interpreter> interpreter_;
 #endif
   };
