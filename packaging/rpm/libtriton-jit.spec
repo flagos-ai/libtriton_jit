@@ -21,12 +21,22 @@ Source0:        libtriton-jit-%{version}.tar.gz
 
 # Minimal BuildRequires - CUDA, PyTorch, Triton are container-provided
 BuildRequires:  cmake
+%if 0%{?openEuler}
+BuildRequires:  python3-ninja
+%else
 BuildRequires:  ninja-build
+%endif
 BuildRequires:  gcc-c++
 BuildRequires:  fmt-devel >= 8.1.1
+%if 0%{?openEuler}
+BuildRequires:  nlohmann-json-devel >= 3.10.5
+%else
 BuildRequires:  json-devel >= 3.10.5
+%endif
 BuildRequires:  python3-devel
 BuildRequires:  patchelf
+# standalone_compile.py imports packaging in the runtime Python environment.
+Requires:       python3-packaging
 
 %description
 libtriton_jit is a C++ library providing Triton JIT runtime functionality.
@@ -50,9 +60,12 @@ export PYTHONPATH=$(python3 -c "import site; print(':'.join(site.getsitepackages
 export PATH=/usr/local/bin:$PATH
 # Find torch cmake path without importing torch (avoids cuDNN dependency at configure time)
 TORCH_CMAKE_PATH=$(python3 -c "import importlib.util; s=importlib.util.find_spec('torch'); import os; print(os.path.join(os.path.dirname(s.origin), 'share', 'cmake'))")
-%cmake \
+# openEuler 24.03 has no cmake_build/cmake_install macros. Use an explicit
+# build directory with the distro's configure flags and portable CMake steps.
+%cmake -S . -B build-rpm \
     -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_LIBDIR:PATH=%{_libdir} \
     -DBACKEND=%{backend} \
     -DCMAKE_CUDA_FLAGS="-Xcompiler -fPIE" \
     -DTorch_ROOT="${TORCH_CMAKE_PATH}" \
@@ -65,10 +78,10 @@ TORCH_CMAKE_PATH=$(python3 -c "import importlib.util; s=importlib.util.find_spec
     -DBUILD_TESTING=OFF \
     -DTRITON_JIT_INSTALL=ON
 
-%cmake_build
+cmake --build build-rpm -- %{?_smp_mflags}
 
 %install
-%cmake_install
+DESTDIR=%{buildroot} cmake --install build-rpm
 
 # Fix RPATH
 find %{buildroot}%{_libdir} -name "*.so*" -type f -exec patchelf --remove-rpath {} \; || true

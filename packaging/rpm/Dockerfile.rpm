@@ -1,35 +1,20 @@
 ARG BASE_IMAGE=nvidia/cuda:12.6.0-devel-rockylinux9
-FROM ${BASE_IMAGE} AS builder
+FROM ${BASE_IMAGE} AS build-env
 
 # Vendor flavor (nvidia|metax|mthreads) and matching CMake backend policy.
 # Defaults keep the historical nvidia/CUDA build.
 ARG VENDOR=nvidia
 ARG BACKEND=CUDA
 ARG PYTHON_INDEX=https://pypi.org/simple
-ARG PYTHON_PACKAGES="torch==2.8.0 triton==3.4.0 pybind11==3.1.0"
+ARG PYTHON_PACKAGES
 
-# Enable EPEL and CRB for ninja-build, patchelf, etc.
-RUN dnf install -y epel-release && \
-    (dnf config-manager --set-enabled crb 2>/dev/null || \
-     dnf config-manager --set-enabled powertools 2>/dev/null || true) && \
-    dnf install -y \
-    rpm-build \
-    rpmdevtools \
-    cmake \
-    ninja-build \
-    gcc-c++ \
-    fmt-devel \
-    json-devel \
-    python3-devel \
-    python3-pip \
-    patchelf \
-    git \
-    && dnf clean all
+COPY packaging/rpm/prepare-build-env.sh /tmp/prepare-build-env.sh
+RUN bash /tmp/prepare-build-env.sh
 
+FROM build-env AS builder
 
-# Keep the Python ABI stack reproducible. Non-NVIDIA builders can override
-# both arguments with their vendor index and matching package versions.
-RUN pip3 install --no-cache-dir --index-url "${PYTHON_INDEX}" ${PYTHON_PACKAGES}
+# NVIDIA's Fedora RPMs do not add nvcc to PATH, unlike the CUDA base images.
+ENV PATH=/usr/local/cuda/bin:${PATH}
 
 # Setup RPM build environment
 RUN rpmdev-setuptree

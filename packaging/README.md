@@ -30,6 +30,8 @@ docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04 -f Dock
 ```bash
 cd packaging/rpm
 ./build-rpm.sh --base-image nvidia/cuda:12.6.0-devel-rockylinux9 --output-dir ./output
+./build-rpm.sh --base-image openeuler/cuda:13.0.0-oe2403lts --output-dir ./output-oe2403
+./build-rpm.sh --base-image fedora:43 --output-dir ./output-fc43
 ```
 
 ### Manual build
@@ -57,7 +59,10 @@ The `.github/workflows/build-deb.yml` and `build-rpm.yml` workflows build
 packages on tag push (`v*`) and on PRs that touch packaging, targeting the
 FlagOS NVIDIA environment:
 - Debian packages on Ubuntu 22.04 + CUDA 12.8
-- RPM packages on Rocky Linux 9 + CUDA 12.6
+- RPM packages on Rocky Linux 9, openEuler 24.03 and Fedora 43
+- The openEuler and Fedora RPMs are installed together with their development
+  packages in clean distribution containers. GPU execution requires a separate
+  driver and matching Python runtime environment.
 
 ## Dependencies
 
@@ -82,12 +87,21 @@ FlagOS NVIDIA environment:
 | Format | CUDA | Python | PyTorch | Triton | pybind11 |
 | --- | --- | --- | --- | --- | --- |
 | DEB | 12.8 | 3.12 | 2.10.0+cu128 | 3.6.0 | 3.0.3 |
-| RPM | 12.6 | 3.9 | 2.8.0 | 3.4.0 | 3.1.0 |
+| RPM (EL9) | 12.6 | 3.9 | 2.8.0 | 3.4.0 | 3.1.0 |
+| RPM (openEuler 24.03) | 13.0 | 3.11 | 2.8.0+cpu | 3.4.0 | 3.1.0 |
+| RPM (Fedora 43) | 13.2 | 3.14 | 2.9.0+cpu | 3.5.0 | 3.1.0 |
+
+The two new RPM builds use CPU PyTorch wheels for the C++ headers and libraries.
+The NVIDIA backend calls the CUDA driver API directly. The CUDA toolkit is a
+build input and is not shipped in the RPM. At runtime, use the same PyTorch
+version and Python ABI, plus an NVIDIA driver compatible with the build toolkit.
+Building and installing these RPMs does not validate GPU kernel execution.
 
 ## Notes
 
 - pybind11 is supplied externally via pip; Debian builds use `libfmt-dev` and
-  `nlohmann-json3-dev`, while RPM builds use EPEL `fmt-devel` and `json-devel`
+  `nlohmann-json3-dev`. RPM builds use distro `fmt-devel` and `json-devel`
+  (`nlohmann-json-devel` on openEuler), with EPEL enabled only on EL builds
 - CUDA and pip-provided PyTorch SONAMEs are excluded from generated package
   dependencies because they are not owned by the distro package database
 - RPATH is removed from the shared libraries during packaging
