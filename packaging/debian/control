@@ -8,7 +8,7 @@ Build-Depends: debhelper-compat (= 13),
                ninja-build,
                nlohmann-json3-dev (>= 3.10.5),
                patchelf,
-               python3.12-dev
+               python3-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/flagos-ai/libtriton_jit
 Vcs-Browser: https://github.com/flagos-ai/libtriton_jit
@@ -30,7 +30,7 @@ Package: libtriton-jit-nvidia
 Architecture: amd64 arm64
 Depends: ${shlibs:Depends},
          ${misc:Depends},
-         libpython3.12 (>= 3.12)
+         python3-packaging
 Description: Triton JIT runtime library
  libtriton_jit is a C++ library providing Triton JIT runtime functionality.
  It enables just-in-time compilation of Triton kernels for GPU acceleration.
