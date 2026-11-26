@@ -57,12 +57,12 @@ RUN cp -r packaging/debian debian && \
     else suffix="${DEB_VERSION_SUFFIX}"; fi && \
     if [ -n "${suffix}" ]; then \
         base="$(dpkg-parsechangelog -l debian/changelog -SVersion)" && \
-        clean_base="$(printf '%s' "${base}" | sed -E 's/\+ubuntu[0-9]+\.[0-9]+$//')" && \
-        if [ "${base}" != "${clean_base}${suffix}" ]; then \
+        case "${base}" in *"${suffix}") ;; *) \
+            clean_base="$(printf '%s' "${base}" | sed -E 's/\+ubuntu[0-9]+\.[0-9]+$//')" && \
             DEBFULLNAME="FlagOS Contributors" DEBEMAIL="contact@flagos.io" \
             dch -b -v "${clean_base}${suffix}" -D unstable --force-distribution \
-                "Rebuild for $(. /etc/os-release && echo "${PRETTY_NAME}")." ; \
-        fi && \
+                "Rebuild for $(. /etc/os-release && echo "${PRETTY_NAME}")." ;; \
+        esac && \
         echo "Package version: $(dpkg-parsechangelog -l debian/changelog -SVersion)"; \
     fi
 
