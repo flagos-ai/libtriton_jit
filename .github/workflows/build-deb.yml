@@ -42,13 +42,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Match the FlagOS NVIDIA build env (flaggems-nvidia-12.8
-          # container): ubuntu22.04 + cuda12.8 + python3.12. A 22.04
-          # binary also runs on 24.04 (glibc backward-compat); the
-          # reverse does not hold.
+          # Build natively against each supported Ubuntu suite's system Python
+          # (Python 3.10 on 22.04, Python 3.12 on 24.04) with no external PPA.
           - vendor: nvidia
             base_image: "nvidia/cuda:12.8.0-devel-ubuntu22.04"
             label: "ubuntu2204-cuda1280"
+          - vendor: nvidia
+            base_image: "nvidia/cuda:12.8.0-devel-ubuntu24.04"
+            label: "ubuntu2404-cuda1280"
           # Other vendors are ready in the packaging (source supports the
           # MUSA/MACA backends); enable each once a base image carrying the
           # vendor SDK + matching torch is available.

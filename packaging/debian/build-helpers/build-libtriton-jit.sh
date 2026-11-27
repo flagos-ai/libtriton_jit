@@ -18,10 +18,9 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # Default values — must match Dockerfile.deb's ARG BASE_IMAGE default.
-# This is the FlagOS NVIDIA env (ubuntu22.04 + cuda12.8 + python3.12) so
-# the resulting -dev package is ABI-compatible with the FlagGems C++ build
-# that consumes it; overriding it risks a silent ABI mismatch.
-BASE_IMAGE="nvidia/cuda:12.8.0-devel-ubuntu22.04"
+# Each Ubuntu suite builds against its native Python (3.10 on 22.04, 3.12 on
+# 24.04) and stamps +ubuntu<ver> onto the package revision.
+BASE_IMAGE="nvidia/cuda:12.8.0-devel-ubuntu24.04"
 VENDOR="nvidia"
 OUTPUT_DIR=""
 
@@ -99,7 +98,7 @@ fi
 # Extract .deb files from the output stage
 log_step "Extracting .deb packages to: ${OUTPUT_DIR}"
 CONTAINER_NAME="libtriton-jit-deb-tmp-$$"
-if docker create --name "${CONTAINER_NAME}" "${IMAGE_TAG}" 2>/dev/null; then
+if docker create --name "${CONTAINER_NAME}" "${IMAGE_TAG}" /bin/true 2>/dev/null; then
     docker cp "${CONTAINER_NAME}:/output/." "${OUTPUT_DIR}/" || log_warn "No .deb files found"
     docker rm "${CONTAINER_NAME}" >/dev/null
 else
