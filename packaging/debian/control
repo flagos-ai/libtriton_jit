@@ -27,7 +27,7 @@ X-Build-Environment: This package is designed to be built in a CUDA container
  the remaining build dependencies are declared above.
 
 Package: libtriton-jit-nvidia
-Architecture: amd64 arm64
+Architecture: any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          python3-packaging
@@ -39,7 +39,7 @@ Description: Triton JIT runtime library
 
 Package: libtriton-jit-nvidia-dev
 Section: libdevel
-Architecture: amd64 arm64
+Architecture: any
 Depends: ${misc:Depends},
          libtriton-jit-nvidia (= ${binary:Version}),
          libfmt-dev (>= 8.1.1)
