@@ -52,7 +52,7 @@ RUN cp -r packaging/debian debian && \
     if [ -n "${suffix}" ]; then \
         base="$(dpkg-parsechangelog -l debian/changelog -SVersion)" && \
         case "${base}" in *"${suffix}") ;; *) \
-            clean_base="$(printf '%s' "${base}" | sed -E 's/\+[a-z][a-z0-9.]*$//')" && \
+            clean_base="$(printf '%s' "${base}" | sed -E 's/\+[a-z]{3,}[0-9][a-z0-9.]*$//')" && \
             DEBFULLNAME="FlagOS Contributors" DEBEMAIL="contact@flagos.io" \
             dch -b -v "${clean_base}${suffix}" -D unstable --force-distribution \
                 "Rebuild for $(. /etc/os-release && echo "${PRETTY_NAME}")." ;; \
